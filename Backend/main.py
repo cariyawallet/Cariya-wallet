@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker, Session
 from decimal import Decimal
 from datetime import datetime
 from utils.unique_identifier_funcs import normalize_mobile_number, parse_children_ages, generate_unique_identifier
-from utils.helpers import calculate_expected_savings, update_activity_points, update_compliance_score, calculate_monthly_scores, calculate_donor_contribution, segment_users_and_analyze_trends
+from utils.helpers import calculate_expected_savings, update_activity_points, update_compliance_score, calculate_monthly_scores, calculate_donor_contribution, segment_mothers_and_analyze_trends
 from utils.models import Mother, MotherActivity, MotherPartnerActivity, MonthlySavings, MonthlyActivityModel, Partners, Base
 
 
@@ -435,61 +435,61 @@ async def get_compliance(mother_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/mothers/{mother_id}/activities")
-async def add_monthly_activity(mother_id: str, activity_data: MonthlyActivity, db: Session = Depends(get_db)):
-    """Add a monthly activity for a mother and update activity points."""
-    try:
-        mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
-        if not mother:
-            raise HTTPException(status_code=404, detail=f"No mother found with unique identifier {mother_id}")
+# @app.post("/mothers/{mother_id}/activities")
+# async def add_monthly_activity(mother_id: str, activity_data: MonthlyActivity, db: Session = Depends(get_db)):
+#     """Add a monthly activity for a mother and update activity points."""
+#     try:
+#         mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
+#         if not mother:
+#             raise HTTPException(status_code=404, detail=f"No mother found with unique identifier {mother_id}")
 
-        if not 1 <= activity_data.month <= 12:
-            raise HTTPException(status_code=400, detail="Month must be between 1 and 12")
+#         if not 1 <= activity_data.month <= 12:
+#             raise HTTPException(status_code=400, detail="Month must be between 1 and 12")
 
-        current_month = min(datetime.now().month, 4)
-        if activity_data.month > current_month:
-            raise HTTPException(status_code=400, detail=f"Cannot add activity for future month {activity_data.month}")
+#         current_month = min(datetime.now().month, 4)
+#         if activity_data.month > current_month:
+#             raise HTTPException(status_code=400, detail=f"Cannot add activity for future month {activity_data.month}")
 
-        activity = db.query(MotherActivity).filter(MotherActivity.activity_id == activity_data.activity_id).first()
-        if not activity:
-            raise HTTPException(status_code=404, detail=f"No activity found with ID {activity_data.activity_id}")
+#         activity = db.query(MotherActivity).filter(MotherActivity.activity_id == activity_data.activity_id).first()
+#         if not activity:
+#             raise HTTPException(status_code=404, detail=f"No activity found with ID {activity_data.activity_id}")
 
-        month_key = f"{datetime.now().year}-{activity_data.month:02d}"
+#         month_key = f"{datetime.now().year}-{activity_data.month:02d}"
 
-        # Check if mother is assigned to this activity
-        if not db.query(MotherPartnerActivity).filter(
-            MotherPartnerActivity.mother_id == mother_id,
-            MotherPartnerActivity.activity_id == activity_data.activity_id
-        ).first():
-            raise HTTPException(status_code=400, detail="Mother is not assigned to this activity")
+#         # Check if mother is assigned to this activity
+#         if not db.query(MotherPartnerActivity).filter(
+#             MotherPartnerActivity.mother_id == mother_id,
+#             MotherPartnerActivity.activity_id == activity_data.activity_id
+#         ).first():
+#             raise HTTPException(status_code=400, detail="Mother is not assigned to this activity")
 
-        # Add monthly activity
-        monthly_activity = MonthlyActivityModel(
-            mother_id=mother_id,
-            month_key=month_key,
-            activity_id=activity_data.activity_id,
-            activity_points=1
-        )
-        db.add(monthly_activity)
-        db.commit()
+#         # Add monthly activity
+#         monthly_activity = MonthlyActivityModel(
+#             mother_id=mother_id,
+#             month_key=month_key,
+#             activity_id=activity_data.activity_id,
+#             activity_points=1
+#         )
+#         db.add(monthly_activity)
+#         db.commit()
 
-        # Update activity points and compliance score
-        activity_points = update_activity_points(db, mother_id, current_month)
-        mother.activity_points = activity_points
-        compliance_score = update_compliance_score(db, mother_id, current_month)
-        mother.compliance_score = compliance_score
-        db.commit()
+#         # Update activity points and compliance score
+#         activity_points = update_activity_points(db, mother_id, current_month)
+#         mother.activity_points = activity_points
+#         compliance_score = update_compliance_score(db, mother_id, current_month)
+#         mother.compliance_score = compliance_score
+#         db.commit()
 
-        return {
-            "message": f"Activity added for month {month_key}",
-            "activity_points": activity_points,
-            "compliance_score": f"{compliance_score}/{current_month * 2}"
-        }
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+#         return {
+#             "message": f"Activity added for month {month_key}",
+#             "activity_points": activity_points,
+#             "compliance_score": f"{compliance_score}/{current_month * 2}"
+#         }
+#     except HTTPException as e:
+#         raise e
+#     except Exception as e:
+#         db.rollback()
+#         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/calculate-scores")
 async def calculate_scores(month: int | None = None, db: Session = Depends(get_db)):

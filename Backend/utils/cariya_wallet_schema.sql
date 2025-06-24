@@ -46,6 +46,8 @@ CREATE TABLE mothers (
     donor_contributions DECIMAL(15, 2) NOT NULL DEFAULT 0.0 CHECK (donor_contributions >= 0),
     partner_id VARCHAR(50) REFERENCES partners(partner_id) ON DELETE SET NULL,
     location VARCHAR(100),
+    education_level VARCHAR(50),  -- New column for education level
+    nin VARCHAR(50),  -- New column for National Identification Number
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT unique_mobile_number UNIQUE (mobile_number)

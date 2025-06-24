@@ -43,6 +43,8 @@ class Mother(Base):
     donor_contributions = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("donor_contributions >= 0")})
     partner_id = Column(String(50), ForeignKey("partners.partner_id", ondelete="SET NULL"))
     location = Column(String(100))
+    education_level = Column(String(50))
+    nin = Column(String(50))
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
@@ -88,3 +90,11 @@ class MonthlyActivityModel(Base):
     activity_points = Column(Integer, nullable=False, default=1, info={"check_constraint": CheckConstraint("activity_points = 1")})
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+# from sqlalchemy import create_engine
+# from models import Base
+# DATABASE_URL = "postgresql://cariyadb_user:hOZPY44VmR4vQv8P9OFzwCOHdShXrGBv@dpg-d1972anfte5s73c2rao0-a.oregon-postgres.render.com/cariyadb"
+# engine = create_engine(DATABASE_URL)
+# Base.metadata.create_all(bind=engine)
+# print("Schema applied successfully")
