@@ -2,7 +2,7 @@ from datetime import datetime
 import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from models import Mother, MonthlyActivityModel, MonthlySavings
+from utils.models import Mother, MonthlyActivityModel, MonthlySavings
 from fastapi import HTTPException
 
 # Configure logging
@@ -117,7 +117,7 @@ def calculate_donor_contribution(db: Session, mother_id: str, target_month: int)
     return donor_contribution
 
 def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
-    """Calculate and update scores for all mothers at the end of the month, including donor contributions."""
+    """Calculate and update scores for all mothers at the end of the month, avoiding repeated scoring."""
     try:
         current_date = datetime.now()
         current_month = current_date.month
@@ -136,12 +136,17 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
         for mother in mothers:
             mother_id = mother.generated_id
 
-            # Calculate milestone score
-            expected_savings = calculate_expected_savings(mother.num_children)
+            # Check if the mother has already been scored for this month
             savings = db.query(MonthlySavings).filter(
                 MonthlySavings.mother_id == mother_id,
                 MonthlySavings.month_key == month_key
             ).first()
+            if savings and savings.scored:
+                logger.info(f"Mother {mother_id} has already been scored for month {month_key}. Skipping.")
+                continue
+
+            # Calculate milestone score
+            expected_savings = calculate_expected_savings(mother.num_children)
             if savings:
                 monthly_savings = float(savings.savings)
                 milestone_score = 1 if monthly_savings >= expected_savings else 0
@@ -152,6 +157,7 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
             # Update or create monthly_savings
             if savings:
                 savings.milestone_score = milestone_score
+                savings.scored = True  # Mark as scored
                 savings.updated_at = datetime.utcnow()
             else:
                 savings = MonthlySavings(
@@ -159,7 +165,8 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
                     month_key=month_key,
                     savings=monthly_savings,
                     milestone_score=milestone_score,
-                    donor_contribution=0.0
+                    donor_contribution=0.0,
+                    scored=True  # Mark as scored
                 )
                 db.add(savings)
             db.flush()
@@ -182,7 +189,8 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
         db.rollback()
         logger.error(f"Error calculating monthly scores: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error calculating monthly scores: {str(e)}")
-
+    
+    
 def segment_mothers_and_analyze_trends(db: Session) -> dict:
     """Segment mothers based on compliance scores and analyze behavior trends."""
     try:

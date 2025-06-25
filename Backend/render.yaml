@@ -1,0 +1,9 @@
+services:
+  - name: cariya-wallet-api
+    type: web
+    env: docker
+    dockerfilePath: Dockerfile
+    buildCommand: ""
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port 8000"
+    plan: free
+    autoDeploy: true

@@ -1,13 +1,14 @@
 import os
 import uuid
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
+from typing import Union
 from decimal import Decimal
 from datetime import datetime
+from apscheduler.schedulers.background import BackgroundScheduler
 from utils.unique_identifier_funcs import normalize_mobile_number, parse_children_ages, generate_unique_identifier
 from utils.helpers import calculate_expected_savings, update_activity_points, update_compliance_score, calculate_monthly_scores, calculate_donor_contribution, segment_mothers_and_analyze_trends
 from utils.models import Mother, MotherActivity, MotherPartnerActivity, MonthlySavings, MonthlyActivityModel, Partners, Base
@@ -33,11 +34,11 @@ app.add_middleware(
 # Pydantic models
 class AddPartner(BaseModel):
     partner_name: str
-    description: str | None
+    description: Union[str, None]
     location: str
     total_members: int = 0
-    tel_number: str | None
-    email: str | None
+    tel_number: Union[str, None]
+    email: Union[str, None]
 
     @field_validator("partner_name")
     @classmethod
@@ -85,7 +86,7 @@ class AddPartner(BaseModel):
 class AddActivity(BaseModel):
     partner_id: str
     name: str
-    description: str | None
+    description: Union[str, None]
     num_people: int = 0
 
     @field_validator("partner_id")
@@ -117,8 +118,8 @@ class AddMother(BaseModel):
     mobile_number: str
     num_children: int
     ages_of_children_per_birth: str  # Expected format: "2" or "2/9" or "3/6/7" etc.
-    partner_id: str | None
-    location: str | None
+    partner_id: Union[str, None]
+    location: Union[str, None]
     activity_id: str
 
     @field_validator("mobile_number")
@@ -157,7 +158,7 @@ class MonthlyActivity(BaseModel):
 
 class SavingsEntry(BaseModel):
     amount: float
-    month: int | None
+    month: Union[int, None]
 
 # Dependency to get DB session
 def get_db():
@@ -166,6 +167,25 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# Scheduler setup
+scheduler = BackgroundScheduler()
+
+def run_scoring_job():
+    """Run the scoring job every 30 minutes."""
+    db = SessionLocal()
+    try:
+        current_month = datetime.now().month
+        calculate_monthly_scores(db, target_month=current_month)
+        print(f"Scoring job executed successfully for month {current_month}")
+    except Exception as e:
+        print(f"Error running scoring job: {str(e)}")
+    finally:
+        db.close()
+
+# Schedule the scoring job to run every 30 minutes
+scheduler.add_job(run_scoring_job, "interval", minutes=30)
+scheduler.start()
 
 @app.post("/addPartner")
 async def add_partner(partner_data: AddPartner, db: Session = Depends(get_db)):
@@ -200,6 +220,74 @@ async def add_partner(partner_data: AddPartner, db: Session = Depends(get_db)):
         raise e
     except Exception as e:
         db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    
+@app.get("/partners")
+async def get_partners(db: Session = Depends(get_db)):
+    """Retrieve all partners."""
+    try:
+        partners = db.query(Partners).all()
+        if not partners:
+            return {"message": "No partners found"}
+        return [{"partner_id": p.partner_id, "partner_name": p.partner_name, "location": p.location, "total_members": p.total_members} for p in partners]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/partners")
+async def get_partners(db: Session = Depends(get_db)):
+    """Retrieve all partners."""
+    try:
+        partners = db.query(Partners).all()
+        if not partners:
+            return {"message": "No partners found"}
+        return [
+            {
+                "partner_id": p.partner_id,
+                "partner_name": p.partner_name,
+                "description": p.description,
+                "location": p.location,
+                "total_members": p.total_members,
+                "tel_number": p.tel_number,
+                "email": p.email,
+                "created_at": p.created_at,
+                "updated_at": p.updated_at,
+            }
+            for p in partners
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/partners/{partner_id}")
+async def get_partner_profile(partner_id: str, db: Session = Depends(get_db)):
+    """Retrieve a partner's profile by ID."""
+    try:
+        partner = db.query(Partners).filter(Partners.partner_id == partner_id).first()
+        if not partner:
+            raise HTTPException(status_code=404, detail=f"No partner found with ID {partner_id}")
+        
+        return {
+            "partner_id": partner.partner_id,
+            "partner_name": partner.partner_name,
+            "description": partner.description,
+            "location": partner.location,
+            "total_members": partner.total_members,
+            "tel_number": partner.tel_number,
+            "email": partner.email,
+            "created_at": partner.created_at,
+            "updated_at": partner.updated_at,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    
+@app.get("/partners/{partner_id}/activities")
+async def get_activities_by_partner(partner_id: str, db: Session = Depends(get_db)):
+    """Retrieve activities associated with a specific partner."""
+    try:
+        activities = db.query(MotherActivity).filter(MotherActivity.partner_id == partner_id).all()
+        if not activities:
+            return {"message": f"No activities found for partner with ID {partner_id}"}
+        return [{"activity_id": a.activity_id, "name": a.name, "description": a.description, "num_people": a.num_people} for a in activities]
+    except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/addActivity")
@@ -239,6 +327,17 @@ async def add_activity(activity_data: AddActivity, db: Session = Depends(get_db)
         raise e
     except Exception as e:
         db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/activities")
+async def get_activities(db: Session = Depends(get_db)):
+    """Retrieve all activities."""
+    try:
+        activities = db.query(MotherActivity).all()
+        if not activities:
+            return {"message": "No activities found"}
+        return [{"activity_id": a.activity_id, "name": a.name, "description": a.description, "num_people": a.num_people, "partner_id": a.partner_id} for a in activities]
+    except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/addMother")
@@ -323,6 +422,17 @@ async def add_mother(mother_data: AddMother, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/mothers")
+async def get_mothers(db: Session = Depends(get_db)):
+    """Retrieve all mothers."""
+    try:
+        mothers = db.query(Mother).all()
+        if not mothers:
+            return {"message": "No mothers found"}
+        return [{"generated_id": m.generated_id, "first_name": m.first_name, "surname": m.surname, "mobile_number": m.mobile_number, "num_children": m.num_children} for m in mothers]
+    except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/mothers/{mother_id}")
@@ -415,6 +525,64 @@ async def add_savings(mother_id: str, savings_data: SavingsEntry, db: Session = 
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+@app.get("/mothers/{mother_id}/monthly-savings")
+async def get_monthly_savings(mother_id: str, db: Session = Depends(get_db)):
+    """Retrieve monthly savings for a specific mother."""
+    try:
+        savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother_id).all()
+        if not savings:
+            return {"message": f"No savings found for mother with ID {mother_id}"}
+        return [{"month_key": s.month_key, "savings": float(s.savings), "milestone_score": s.milestone_score, "donor_contribution": float(s.donor_contribution)} for s in savings]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    
+
+@app.get("/monthly-savings")
+async def get_all_monthly_savings(month: Union[str, None] = None, db: Session = Depends(get_db)):
+    """
+    Retrieve all monthly savings for all mothers.
+    Optionally filter by a specific month using the 'month' query parameter (format: YYYY-MM).
+    """
+    try:
+        # Query all monthly savings
+        if month:
+            # Filter by the given month
+            savings = db.query(MonthlySavings).filter(MonthlySavings.month_key == month).all()
+        else:
+            # Retrieve all savings if no month is specified
+            savings = db.query(MonthlySavings).all()
+
+        if not savings:
+            return {"message": "No savings found"}
+
+        # Format the response
+        result = [
+            {
+                "mother_id": s.mother_id,
+                "month_key": s.month_key,
+                "savings": float(s.savings),
+                "milestone_score": s.milestone_score,
+                "donor_contribution": float(s.donor_contribution),
+            }
+            for s in savings
+        ]
+
+        return {"monthly_savings": result}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    
+@app.get("/mothers/{mother_id}/monthly-activities")
+async def get_monthly_activities(mother_id: str, db: Session = Depends(get_db)):
+    """Retrieve monthly activities for a specific mother."""
+    try:
+        activities = db.query(MonthlyActivityModel).filter(MonthlyActivityModel.mother_id == mother_id).all()
+        if not activities:
+            return {"message": f"No activities found for mother with ID {mother_id}"}
+        return [{"month_key": a.month_key, "activity_id": a.activity_id, "activity_points": a.activity_points} for a in activities]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 @app.get("/mothers/{mother_id}/compliance")
 async def get_compliance(mother_id: str, db: Session = Depends(get_db)):
     """Get annual compliance score."""
@@ -434,73 +602,6 @@ async def get_compliance(mother_id: str, db: Session = Depends(get_db)):
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-# @app.post("/mothers/{mother_id}/activities")
-# async def add_monthly_activity(mother_id: str, activity_data: MonthlyActivity, db: Session = Depends(get_db)):
-#     """Add a monthly activity for a mother and update activity points."""
-#     try:
-#         mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
-#         if not mother:
-#             raise HTTPException(status_code=404, detail=f"No mother found with unique identifier {mother_id}")
-
-#         if not 1 <= activity_data.month <= 12:
-#             raise HTTPException(status_code=400, detail="Month must be between 1 and 12")
-
-#         current_month = min(datetime.now().month, 4)
-#         if activity_data.month > current_month:
-#             raise HTTPException(status_code=400, detail=f"Cannot add activity for future month {activity_data.month}")
-
-#         activity = db.query(MotherActivity).filter(MotherActivity.activity_id == activity_data.activity_id).first()
-#         if not activity:
-#             raise HTTPException(status_code=404, detail=f"No activity found with ID {activity_data.activity_id}")
-
-#         month_key = f"{datetime.now().year}-{activity_data.month:02d}"
-
-#         # Check if mother is assigned to this activity
-#         if not db.query(MotherPartnerActivity).filter(
-#             MotherPartnerActivity.mother_id == mother_id,
-#             MotherPartnerActivity.activity_id == activity_data.activity_id
-#         ).first():
-#             raise HTTPException(status_code=400, detail="Mother is not assigned to this activity")
-
-#         # Add monthly activity
-#         monthly_activity = MonthlyActivityModel(
-#             mother_id=mother_id,
-#             month_key=month_key,
-#             activity_id=activity_data.activity_id,
-#             activity_points=1
-#         )
-#         db.add(monthly_activity)
-#         db.commit()
-
-#         # Update activity points and compliance score
-#         activity_points = update_activity_points(db, mother_id, current_month)
-#         mother.activity_points = activity_points
-#         compliance_score = update_compliance_score(db, mother_id, current_month)
-#         mother.compliance_score = compliance_score
-#         db.commit()
-
-#         return {
-#             "message": f"Activity added for month {month_key}",
-#             "activity_points": activity_points,
-#             "compliance_score": f"{compliance_score}/{current_month * 2}"
-#         }
-#     except HTTPException as e:
-#         raise e
-#     except Exception as e:
-#         db.rollback()
-#         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.post("/calculate-scores")
-async def calculate_scores(month: int | None = None, db: Session = Depends(get_db)):
-    """Calculate and update scores for all mothers."""
-    try:
-        result = calculate_monthly_scores(db, month)
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/donor-view")
 async def donor_view(db: Session = Depends(get_db)):
@@ -541,4 +642,9 @@ async def donor_view(db: Session = Depends(get_db)):
 if __name__ == "__main__":
     import uvicorn
     Base.metadata.create_all(bind=engine)
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    try:
+        print("Starting FastAPI application with scheduler...")
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    except (KeyboardInterrupt, SystemExit):
+        print("Shutting down scheduler...")
+        scheduler.shutdown()
