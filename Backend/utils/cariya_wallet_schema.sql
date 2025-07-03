@@ -19,6 +19,35 @@ CREATE TABLE partners (
     CONSTRAINT unique_email UNIQUE (email)
 );
 
+-- Creating the donors table to store donor information
+CREATE TABLE donors (
+    donor_id VARCHAR(50) PRIMARY KEY,
+    first_name VARCHAR(100) NOT NULL,
+    surname VARCHAR(100) NOT NULL,
+    email VARCHAR(255) NOT NULL CHECK (email ~ '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'),
+    country_of_residence VARCHAR(100),
+    preferred_activities VARCHAR(50)[],
+    total_contributions DECIMAL(15, 2) NOT NULL DEFAULT 0.0 CHECK (total_contributions >= 0),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_donor_email UNIQUE (email)
+);
+
+-- Creating the businesses table to store business registration information
+CREATE TABLE businesses (
+    business_id VARCHAR(50) PRIMARY KEY,
+    business_name VARCHAR(100) NOT NULL,
+    contact_email VARCHAR(255) NOT NULL CHECK (contact_email ~ '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'),
+    country_of_residence VARCHAR(100),
+    payment_details TEXT,
+    subscription_status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (subscription_status IN ('active', 'inactive', 'pending')),
+    total_contributions DECIMAL(15, 2) NOT NULL DEFAULT 0.0 CHECK (total_contributions >= 0),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_business_name UNIQUE (business_name),
+    CONSTRAINT unique_business_email UNIQUE (contact_email)
+);
+
 -- Creating the mother_activities table to store activity information, owned by partners
 CREATE TABLE mother_activities (
     activity_id VARCHAR(50) PRIMARY KEY,
@@ -45,9 +74,10 @@ CREATE TABLE mothers (
     compliance_score INTEGER NOT NULL DEFAULT 0 CHECK (compliance_score >= 0),
     donor_contributions DECIMAL(15, 2) NOT NULL DEFAULT 0.0 CHECK (donor_contributions >= 0),
     partner_id VARCHAR(50) REFERENCES partners(partner_id) ON DELETE SET NULL,
+    donor_id VARCHAR(50) UNIQUE REFERENCES donors(donor_id) ON DELETE SET NULL, -- Nullable for unassigned mothers
     location VARCHAR(100),
-    education_level VARCHAR(50),  -- New column for education level
-    nin VARCHAR(50),  -- New column for National Identification Number
+    education_level VARCHAR(50),
+    nin VARCHAR(50),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT unique_mobile_number UNIQUE (mobile_number)
@@ -55,11 +85,11 @@ CREATE TABLE mothers (
 
 -- Creating the mother_partner_activities junction table for many-to-many relationships
 CREATE TABLE mother_partner_activities (
-    id SERIAL PRIMARY KEY,
     mother_id VARCHAR(50) NOT NULL REFERENCES mothers(generated_id) ON DELETE CASCADE,
     activity_id VARCHAR(50) NOT NULL REFERENCES mother_activities(activity_id) ON DELETE CASCADE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (mother_id, activity_id),
     CONSTRAINT unique_mother_activity UNIQUE (mother_id, activity_id)
 );
 
@@ -88,11 +118,29 @@ CREATE TABLE monthly_activities (
     CONSTRAINT unique_mother_month_activity UNIQUE (mother_id, month_key, activity_id)
 );
 
+-- Creating the donor_contributions table to track individual donor contributions
+CREATE TABLE donor_contributions (
+    id SERIAL PRIMARY KEY,
+    donor_id VARCHAR(50) NOT NULL REFERENCES donors(donor_id) ON DELETE CASCADE,
+    mother_id VARCHAR(50) NOT NULL REFERENCES mothers(generated_id) ON DELETE CASCADE,
+    month_key CHAR(7) NOT NULL CHECK (month_key ~ '^[0-9]{4}-[0-1][0-9]$'),
+    amount DECIMAL(15, 2) NOT NULL DEFAULT 0.0 CHECK (amount >= 0),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_donor_mother_month UNIQUE (donor_id, mother_id, month_key),
+    CONSTRAINT check_donor_mother_match CHECK (
+        mother_id IN (SELECT generated_id FROM mothers WHERE donor_id = donor_contributions.donor_id)
+    )
+);
+
 -- Creating indexes for faster queries
 CREATE INDEX idx_partners_location ON partners (location);
+CREATE INDEX idx_donors_country ON donors (country_of_residence);
+CREATE INDEX idx_businesses_country ON businesses (country_of_residence);
 CREATE INDEX idx_mother_activities_partner_id ON mother_activities (partner_id);
 CREATE INDEX idx_mothers_partner_id ON mothers (partner_id);
 CREATE INDEX idx_mothers_location ON mothers (location);
+CREATE INDEX idx_mothers_donor_id ON mothers (donor_id);
 CREATE INDEX idx_monthly_savings_mother_id ON monthly_savings (mother_id);
 CREATE INDEX idx_monthly_savings_month_key ON monthly_savings (month_key);
 CREATE INDEX idx_monthly_activities_mother_id ON monthly_activities (mother_id);
@@ -100,6 +148,9 @@ CREATE INDEX idx_monthly_activities_month_key ON monthly_activities (month_key);
 CREATE INDEX idx_monthly_activities_activity_id ON monthly_activities (activity_id);
 CREATE INDEX idx_mother_partner_activities_mother_id ON mother_partner_activities (mother_id);
 CREATE INDEX idx_mother_partner_activities_activity_id ON mother_partner_activities (activity_id);
+CREATE INDEX idx_donor_contributions_donor_id ON donor_contributions (donor_id);
+CREATE INDEX idx_donor_contributions_mother_id ON donor_contributions (mother_id);
+CREATE INDEX idx_donor_contributions_month_key ON donor_contributions (month_key);
 
 -- Creating a trigger function to update the updated_at timestamp
 CREATE OR REPLACE FUNCTION update_timestamp()
@@ -113,6 +164,16 @@ $$ LANGUAGE plpgsql;
 -- Attaching triggers to update the updated_at column
 CREATE TRIGGER update_partners_timestamp
     BEFORE UPDATE ON partners
+    FOR EACH ROW
+    EXECUTE FUNCTION update_timestamp();
+
+CREATE TRIGGER update_donors_timestamp
+    BEFORE UPDATE ON donors
+    FOR EACH ROW
+    EXECUTE FUNCTION update_timestamp();
+
+CREATE TRIGGER update_businesses_timestamp
+    BEFORE UPDATE ON businesses
     FOR EACH ROW
     EXECUTE FUNCTION update_timestamp();
 
@@ -138,5 +199,10 @@ CREATE TRIGGER update_monthly_savings_timestamp
 
 CREATE TRIGGER update_monthly_activities_timestamp
     BEFORE UPDATE ON monthly_activities
+    FOR EACH ROW
+    EXECUTE FUNCTION update_timestamp();
+
+CREATE TRIGGER update_donor_contributions_timestamp
+    BEFORE UPDATE ON donor_contributions
     FOR EACH ROW
     EXECUTE FUNCTION update_timestamp();

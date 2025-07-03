@@ -27,6 +27,32 @@ class Partners(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
+class Donors(Base):
+    """Represents individual donors contributing to the program."""
+    __tablename__ = "donors"
+    donor_id = Column(String(50), primary_key=True)
+    first_name = Column(String(100), nullable=False)
+    surname = Column(String(100), nullable=False)
+    email = Column(String(255), nullable=False, unique=True)
+    country_of_residence = Column(String(100))
+    preferred_activities = Column(ARRAY(String))
+    total_contributions = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("total_contributions >= 0")})
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class Businesses(Base):
+    """Represents businesses registered for Cariya Nuodge."""
+    __tablename__ = "businesses"
+    business_id = Column(String(50), primary_key=True)
+    business_name = Column(String(100), nullable=False, unique=True)
+    contact_email = Column(String(255), nullable=False, unique=True)
+    country_of_residence = Column(String(100))
+    payment_details = Column(String)
+    subscription_status = Column(String(20), nullable=False, default="pending", info={"check_constraint": CheckConstraint("subscription_status IN ('active', 'inactive', 'pending')")})
+    total_contributions = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("total_contributions >= 0")})
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
 class Mother(Base):
     """Represents a mother participating in the program."""
     __tablename__ = "mothers"
@@ -42,6 +68,7 @@ class Mother(Base):
     compliance_score = Column(Integer, nullable=False, default=0, info={"check_constraint": CheckConstraint("compliance_score >= 0")})
     donor_contributions = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("donor_contributions >= 0")})
     partner_id = Column(String(50), ForeignKey("partners.partner_id", ondelete="SET NULL"))
+    donor_id = Column(String(50), ForeignKey("donors.donor_id", ondelete="SET NULL"), unique=True)
     location = Column(String(100))
     education_level = Column(String(50))
     nin = Column(String(50))
@@ -62,9 +89,8 @@ class MotherActivity(Base):
 class MotherPartnerActivity(Base):
     """Links mothers to activities, enabling many-to-many relationships."""
     __tablename__ = "mother_partner_activities"
-    id = Column(Integer, primary_key=True)
-    mother_id = Column(String(50), ForeignKey("mothers.generated_id", ondelete="CASCADE"), nullable=False)
-    activity_id = Column(String(50), ForeignKey("mother_activities.activity_id", ondelete="CASCADE"), nullable=False)
+    mother_id = Column(String(50), ForeignKey("mothers.generated_id", ondelete="CASCADE"), primary_key=True)
+    activity_id = Column(String(50), ForeignKey("mother_activities.activity_id", ondelete="CASCADE"), primary_key=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
@@ -91,6 +117,16 @@ class MonthlyActivityModel(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
+class DonorContributions(Base):
+    """Tracks individual donor contributions to mothers."""
+    __tablename__ = "donor_contributions"
+    id = Column(Integer, primary_key=True)
+    donor_id = Column(String(50), ForeignKey("donors.donor_id", ondelete="CASCADE"), nullable=False)
+    mother_id = Column(String(50), ForeignKey("mothers.generated_id", ondelete="CASCADE"), nullable=False)
+    month_key = Column(String(7), nullable=False)
+    amount = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("amount >= 0")})
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 # from sqlalchemy import create_engine
 # from models import Base

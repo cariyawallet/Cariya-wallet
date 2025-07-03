@@ -2,7 +2,7 @@ from datetime import datetime
 import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from utils.models import Mother, MonthlyActivityModel, MonthlySavings
+from utils.models import Mother, MonthlyActivityModel, MonthlySavings, Donors, DonorContributions
 from fastapi import HTTPException
 
 # Configure logging
@@ -30,7 +30,7 @@ def update_activity_points(db: Session, mother_id: str, current_month: int) -> i
             MonthlyActivityModel.month_key == month_key
         ).count()
         if activity_count > 0:
-            activity_points += 1  # 1 point per month with at least one activity
+            activity_points += 1
     
     mother.activity_points = activity_points
     mother.updated_at = datetime.utcnow()
@@ -67,57 +67,74 @@ def update_compliance_score(db: Session, mother_id: str, current_month: int) -> 
     logger.info(f"Updated compliance score for mother {mother_id}: {annual_compliance}")
     return annual_compliance
 
-def calculate_donor_contribution(db: Session, mother_id: str, target_month: int) -> float:
-    """Calculate donor contribution for a mother in a specific month."""
-    mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
-    if not mother:
-        raise ValueError(f"No mother found with generated_id {mother_id}")
+def add_donor_contribution(db: Session, mother_id: str, donor_email: str, month_key: str, amount: float) -> dict:
+    """Add a donor contribution for a specific mother and month."""
+    try:
+        if not isinstance(amount, (int, float)) or amount < 0:
+            raise ValueError("Amount must be a non-negative number")
+        if not month_key or not month_key.match(r"^\d{4}-[0-1][0-9]$"):
+            raise ValueError("Invalid month_key format. Expected YYYY-MM")
 
-    current_year = datetime.now().year
-    month_key = f"{current_year}-{target_month:02d}"
-    activity = db.query(MonthlyActivityModel).filter(
-        MonthlyActivityModel.mother_id == mother_id,
-        MonthlyActivityModel.month_key == month_key
-    ).first()
-    savings = db.query(MonthlySavings).filter(
-        MonthlySavings.mother_id == mother_id,
-        MonthlySavings.month_key == month_key
-    ).first()
+        mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
+        if not mother:
+            raise ValueError(f"No mother found with generated_id {mother_id}")
+        if not mother.donor_id:
+            raise ValueError(f"Mother {mother_id} has no assigned donor")
 
-    # Check if mother has an activity for the month
-    if not activity:
-        return 0.0  # No activity, no donor contribution
+        donor = db.query(Donors).filter(Donors.email == donor_email).first()
+        if not donor:
+            raise ValueError(f"No donor found with email {donor_email}")
+        if donor.donor_id != mother.donor_id:
+            raise ValueError(f"Donor {donor_email} is not assigned to mother {mother_id}")
 
-    # Check savings for the month
-    if savings and savings.savings > 0:
-        donor_contribution = float(savings.savings)  # Donor matches the savings
-    else:
-        return 0.0  # No savings, no donor contribution
+        existing_contribution = db.query(DonorContributions).filter(
+            DonorContributions.mother_id == mother_id,
+            DonorContributions.donor_id == donor.donor_id,
+            DonorContributions.month_key == month_key
+        ).first()
+        if existing_contribution:
+            raise ValueError(f"Donor contribution already exists for mother {mother_id} in {month_key}")
 
-    # Update monthly_savings with donor contribution
-    if savings:
-        savings.donor_contribution = donor_contribution
-        savings.updated_at = datetime.utcnow()
-    else:
-        savings = MonthlySavings(
+        savings = db.query(MonthlySavings).filter(
+            MonthlySavings.mother_id == mother_id,
+            MonthlySavings.month_key == month_key
+        ).first()
+        if not savings:
+            savings = MonthlySavings(
+                mother_id=mother_id,
+                month_key=month_key,
+                savings=0.0,
+                milestone_score=0,
+                donor_contribution=amount
+            )
+            db.add(savings)
+        else:
+            savings.donor_contribution = amount
+            savings.updated_at = datetime.utcnow()
+
+        contribution = DonorContributions(
+            donor_id=donor.donor_id,
             mother_id=mother_id,
             month_key=month_key,
-            savings=0.0,
-            milestone_score=0,
-            donor_contribution=donor_contribution
+            amount=amount
         )
-        db.add(savings)
-
-    # Update mother's total savings and donor contributions
-    mother.donor_contributions += donor_contribution
-    mother.savings += donor_contribution
-    mother.updated_at = datetime.utcnow()
-    db.flush()
-    logger.info(f"Calculated donor contribution for mother {mother_id} in {month_key}: {donor_contribution}")
-    return donor_contribution
+        db.add(contribution)
+        donor.total_contributions += amount
+        mother.donor_contributions += amount
+        mother.savings += amount
+        mother.updated_at = datetime.utcnow()
+        donor.updated_at = datetime.utcnow()
+        db.flush()
+        logger.info(f"Added donor contribution for mother {mother_id} by donor {donor.donor_id} in {month_key}: {amount}")
+        db.commit()
+        return {"message": f"Donor contribution of {amount} UGX added for mother {mother_id} in {month_key}"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error adding donor contribution: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error adding donor contribution: {str(e)}")
 
 def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
-    """Calculate and update scores for all mothers at the end of the month, avoiding repeated scoring."""
+    """Calculate and update scores for all mothers at the end of the month."""
     try:
         current_date = datetime.now()
         current_month = current_date.month
@@ -129,24 +146,19 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
         month_key = f"{current_year}-{target_month:02d}"
         logger.info(f"Calculating scores for month: {month_key}")
 
-        mothers = db.query(Mother).all()
+        mothers = db.query(Mother).all()  # Process all mothers
         if not mothers:
             return {"message": "No mothers found to process"}
 
         for mother in mothers:
             mother_id = mother.generated_id
 
-            # Check if the mother has already been scored for this month
+            # Calculate milestone score
+            expected_savings = calculate_expected_savings(mother.num_children)
             savings = db.query(MonthlySavings).filter(
                 MonthlySavings.mother_id == mother_id,
                 MonthlySavings.month_key == month_key
             ).first()
-            if savings and savings.scored:
-                logger.info(f"Mother {mother_id} has already been scored for month {month_key}. Skipping.")
-                continue
-
-            # Calculate milestone score
-            expected_savings = calculate_expected_savings(mother.num_children)
             if savings:
                 monthly_savings = float(savings.savings)
                 milestone_score = 1 if monthly_savings >= expected_savings else 0
@@ -157,7 +169,6 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
             # Update or create monthly_savings
             if savings:
                 savings.milestone_score = milestone_score
-                savings.scored = True  # Mark as scored
                 savings.updated_at = datetime.utcnow()
             else:
                 savings = MonthlySavings(
@@ -165,14 +176,10 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
                     month_key=month_key,
                     savings=monthly_savings,
                     milestone_score=milestone_score,
-                    donor_contribution=0.0,
-                    scored=True  # Mark as scored
+                    donor_contribution=0.0
                 )
                 db.add(savings)
             db.flush()
-
-            # Calculate donor contribution
-            donor_contribution = calculate_donor_contribution(db, mother_id, target_month)
 
             # Update activity points
             activity_points = update_activity_points(db, mother_id, current_month)
@@ -180,28 +187,26 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
             # Update compliance score
             compliance_score = update_compliance_score(db, mother_id, current_month)
 
-            logger.info(f"Updated scores for mother {mother_id}: Milestone={milestone_score}, Activity Points={activity_points}, Compliance={compliance_score}, Donor Contribution={donor_contribution}")
+            logger.info(f"Updated scores for mother {mother_id}: Milestone={milestone_score}, Activity Points={activity_points}, Compliance={compliance_score}")
 
         db.commit()
-        return {"message": f"Scores and donor contributions calculated for month {month_key}"}
+        return {"message": f"Scores calculated for month {month_key}"}
 
     except Exception as e:
         db.rollback()
         logger.error(f"Error calculating monthly scores: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error calculating monthly scores: {str(e)}")
-    
-    
+
 def segment_mothers_and_analyze_trends(db: Session) -> dict:
     """Segment mothers based on compliance scores and analyze behavior trends."""
     try:
         current_month = datetime.now().month
-        max_possible_score = current_month * 2  # 2 points per month (milestone + activity)
+        max_possible_score = current_month * 2
 
         mothers = db.query(Mother).all()
         if not mothers:
             return {"message": "No mothers found to segment"}
 
-        # Segmentation
         high_compliance = []
         moderate_compliance = []
         low_compliance = []
@@ -214,29 +219,26 @@ def segment_mothers_and_analyze_trends(db: Session) -> dict:
             compliance_score = mother.compliance_score
             total_compliance_score += compliance_score
 
-            # Classify mother
             mother_info = {
                 "mother_id": mother.generated_id,
                 "first_name": mother.first_name,
                 "surname": mother.surname,
                 "compliance_score": compliance_score,
                 "total_savings": float(mother.savings),
-                "activity_points": mother.activity_points
+                "activity_points": mother.activity_points,
+                "donor_id": mother.donor_id
             }
 
-            # Adjust classification based on current max possible score
-            if compliance_score >= max_possible_score * 0.75:  # Top 75% of possible score
+            if compliance_score >= max_possible_score * 0.75:
                 high_compliance.append(mother_info)
-            elif compliance_score >= max_possible_score * 0.5:  # Top 50% of possible score
+            elif compliance_score >= max_possible_score * 0.5:
                 moderate_compliance.append(mother_info)
             else:
                 low_compliance.append(mother_info)
 
-            # Collect data for trends
             total_savings += float(mother.savings)
             total_activities += mother.activity_points
 
-        # Calculate trends and insights
         avg_compliance_score = total_compliance_score / total_mothers if total_mothers > 0 else 0
         avg_savings_per_mother = total_savings / total_mothers if total_mothers > 0 else 0
         activity_participation_rate = (total_activities / (total_mothers * current_month)) * 100 if total_mothers > 0 else 0
@@ -245,7 +247,6 @@ def segment_mothers_and_analyze_trends(db: Session) -> dict:
         moderate_percentage = (len(moderate_compliance) / total_mothers) * 100 if total_mothers > 0 else 0
         low_percentage = (len(low_compliance) / total_mothers) * 100 if total_mothers > 0 else 0
 
-        # Insights
         insights = []
         if low_percentage > 50:
             insights.append(f"{low_percentage:.1f}% of mothers need intervention to increase engagement. Consider targeted outreach.")
@@ -284,3 +285,42 @@ def segment_mothers_and_analyze_trends(db: Session) -> dict:
     except Exception as e:
         logger.error(f"Error segmenting mothers: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error segmenting mothers: {str(e)}")
+    
+
+def assign_donor_to_mother(db: Session, mother_id: str, donor_email: str) -> dict:
+    """Assign a donor to a mother, ensuring one-to-one matching."""
+    try:
+        mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
+        if not mother:
+            raise ValueError(f"No mother found with generated_id {mother_id}")
+        
+        if mother.donor_id:
+            raise ValueError(f"Mother {mother_id} already has an assigned donor {mother.donor_id}")
+        
+        donor = db.query(Donors).filter(Donors.email == donor_email).first()
+        if not donor:
+            donor_id = str(uuid.uuid4())
+            donor = Donors(
+                donor_id=donor_id,
+                first_name="Unknown",
+                surname="Donor",
+                email=donor_email,
+                country_of_residence=None,
+                preferred_activities=None
+            )
+            db.add(donor)
+        else:
+            donor_id = donor.donor_id
+            existing_assignment = db.query(Mother).filter(Mother.donor_id == donor_id).first()
+            if existing_assignment:
+                raise ValueError(f"Donor {donor_email} already assigned to mother {existing_assignment.generated_id}")
+        
+        mother.donor_id = donor_id
+        mother.updated_at = datetime.utcnow()
+        db.commit()
+        logger.info(f"Assigned donor {donor_id} to mother {mother_id}")
+        return {"message": f"Donor {donor_email} assigned to mother {mother_id}"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error assigning donor to mother: {str(e)}")
+        raise ValueError(f"Error assigning donor: {str(e)}")

@@ -359,7 +359,7 @@ def import_excel_data(file_path: str, partner_id: str, activity_id: str, db: Ses
         #     print("AddActivity columns:", list(df_activity.columns))
         #     results['add_activity'] = process_add_activity_sheet(df_activity, partner_id, db)
 
-        # # Process Profiles sheet
+        # Process Profiles sheet
         # if 'Profiles' in xls.sheet_names:
         #     df_profiles = pd.read_excel(xls, 'Profiles')
         #     results['profiles'] = process_profiles_sheet(df_profiles, partner_id, activity_id, db)
@@ -385,9 +385,9 @@ def import_excel_data(file_path: str, partner_id: str, activity_id: str, db: Ses
 
 if __name__ == "__main__":
     # Example usage
-    file_path = "data/Okere City Mothers.xlsx"
-    partner_id = "d54687fc-aa96-4b18-8ed0-d910978bba35"  # Replace with actual partner_id
-    activity_id = "43c6b396-46f0-4314-8da9-7d865f11de7e"  # Replace with actual activity_id
+    file_path = "/Users/user/Documents/CARIYA/cariya_wallet/Backend/utils/data/Okere City Mothers.xlsx"
+    partner_id = "4d3d5e7e-811d-44f3-8a61-b47b02d49941"  # Replace with actual partner_id
+    activity_id = "8cc8137f-efcd-4a11-9268-6bf4fbd1619f"  # Replace with actual activity_id
     db_session = next(get_db())
     result = import_excel_data(file_path, partner_id, activity_id, db_session)
     print(result)

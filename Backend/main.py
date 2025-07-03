@@ -1,18 +1,18 @@
 import os
 import uuid
+import re
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from typing import Union
+from typing import Union, List
 from decimal import Decimal
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from utils.unique_identifier_funcs import normalize_mobile_number, parse_children_ages, generate_unique_identifier
-from utils.helpers import calculate_expected_savings, update_activity_points, update_compliance_score, calculate_monthly_scores, calculate_donor_contribution, segment_mothers_and_analyze_trends
-from utils.models import Mother, MotherActivity, MotherPartnerActivity, MonthlySavings, MonthlyActivityModel, Partners, Base
-
+from utils.helpers import calculate_expected_savings, update_activity_points, update_compliance_score, calculate_monthly_scores, add_donor_contribution, segment_mothers_and_analyze_trends
+from utils.models import Mother, MotherActivity, MotherPartnerActivity, MonthlySavings, MonthlyActivityModel, Partners, Donors, Businesses, DonorContributions, Base
 
 DATABASE_URL = "postgresql://cariyadb_user:hOZPY44VmR4vQv8P9OFzwCOHdShXrGBv@dpg-d1972anfte5s73c2rao0-a.oregon-postgres.render.com/cariyadb"
 if not DATABASE_URL:
@@ -82,6 +82,194 @@ class AddPartner(BaseModel):
         if len(v) > 255 or not v or "@" not in v or "." not in v:
             raise ValueError("Invalid email format")
         return v.strip()
+
+class AddDonor(BaseModel):
+    first_name: str
+    surname: str
+    email: str
+    country_of_residence: Union[str, None]
+    preferred_activities: Union[List[str], None]
+
+    @field_validator("first_name", "surname")
+    @classmethod
+    def validate_name(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError("Name cannot be empty")
+        if len(v) > 100:
+            raise ValueError("Name must be 100 characters or less")
+        return v.strip()
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v):
+        if len(v) > 255 or not v or "@" not in v or "." not in v:
+            raise ValueError("Invalid email format")
+        return v.strip()
+
+    @field_validator("country_of_residence")
+    @classmethod
+    def validate_country(cls, v):
+        if v is None:
+            return v
+        if len(v) > 100:
+            raise ValueError("Country of residence must be 100 characters or less")
+        return v.strip()
+
+class UpdateDonor(BaseModel):
+    first_name: Union[str, None]
+    surname: Union[str, None]
+    email: Union[str, None]
+    country_of_residence: Union[str, None]
+    preferred_activities: Union[List[str], None]
+
+    @field_validator("first_name", "surname")
+    @classmethod
+    def validate_name(cls, v):
+        if v is None:
+            return v
+        if len(v.strip()) == 0:
+            raise ValueError("Name cannot be empty")
+        if len(v) > 100:
+            raise ValueError("Name must be 100 characters or less")
+        return v.strip()
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v):
+        if v is None:
+            return v
+        if len(v) > 255 or not v or "@" not in v or "." not in v:
+            raise ValueError("Invalid email format")
+        return v.strip()
+
+    @field_validator("country_of_residence")
+    @classmethod
+    def validate_country(cls, v):
+        if v is None:
+            return v
+        if len(v) > 100:
+            raise ValueError("Country of residence must be 100 characters or less")
+        return v.strip()
+
+class AddBusiness(BaseModel):
+    business_name: str
+    contact_email: str
+    country_of_residence: Union[str, None]
+    payment_details: Union[str, None]
+    subscription_status: str = "pending"
+
+    @field_validator("business_name")
+    @classmethod
+    def validate_business_name(cls, v):
+        if not v or len(v.strip()) == 0:
+            raise ValueError("Business name cannot be empty")
+        if len(v) > 100:
+            raise ValueError("Business name must be 100 characters or less")
+        return v.strip()
+
+    @field_validator("contact_email")
+    @classmethod
+    def validate_email(cls, v):
+        if len(v) > 255 or not v or "@" not in v or "." not in v:
+            raise ValueError("Invalid email format")
+        return v.strip()
+
+    @field_validator("country_of_residence")
+    @classmethod
+    def validate_country(cls, v):
+        if v is None:
+            return v
+        if len(v) > 100:
+            raise ValueError("Country of residence must be 100 characters or less")
+        return v.strip()
+
+    @field_validator("subscription_status")
+    @classmethod
+    def validate_subscription_status(cls, v):
+        valid_statuses = ["active", "inactive", "pending"]
+        if v not in valid_statuses:
+            raise ValueError(f"Subscription status must be one of {valid_statuses}")
+        return v
+
+class UpdateBusiness(BaseModel):
+    business_name: Union[str, None]
+    contact_email: Union[str, None]
+    country_of_residence: Union[str, None]
+    payment_details: Union[str, None]
+    subscription_status: Union[str, None]
+
+    @field_validator("business_name")
+    @classmethod
+    def validate_business_name(cls, v):
+        if v is None:
+            return v
+        if len(v.strip()) == 0:
+            raise ValueError("Business name cannot be empty")
+        if len(v) > 100:
+            raise ValueError("Business name must be 100 characters or less")
+        return v.strip()
+
+    @field_validator("contact_email")
+    @classmethod
+    def validate_email(cls, v):
+        if v is None:
+            return v
+        if len(v) > 255 or not v or "@" not in v or "." not in v:
+            raise ValueError("Invalid email format")
+        return v.strip()
+
+    @field_validator("country_of_residence")
+    @classmethod
+    def validate_country(cls, v):
+        if v is None:
+            return v
+        if len(v) > 100:
+            raise ValueError("Country of residence must be 100 characters or less")
+        return v.strip()
+
+    @field_validator("subscription_status")
+    @classmethod
+    def validate_subscription_status(cls, v):
+        if v is None:
+            return v
+        valid_statuses = ["active", "inactive", "pending"]
+        if v not in valid_statuses:
+            raise ValueError(f"Subscription status must be one of {valid_statuses}")
+        return v
+
+class AddDonation(BaseModel):
+    mother_id: str
+    donor_email: str
+    month_key: str
+    amount: float
+
+    @field_validator("mother_id")
+    @classmethod
+    def validate_mother_id(cls, v):
+        if len(v) > 50:
+            raise ValueError("Mother ID must be 50 characters or less")
+        return v
+
+    @field_validator("donor_email")
+    @classmethod
+    def validate_email(cls, v):
+        if len(v) > 255 or not v or "@" not in v or "." not in v:
+            raise ValueError("Invalid email format")
+        return v.strip()
+
+    @field_validator("month_key")
+    @classmethod
+    def validate_month_key(cls, v):
+        if not re.match(r"^\d{4}-[0-1][0-9]$", v):
+            raise ValueError("Invalid month_key format. Expected YYYY-MM")
+        return v
+
+    @field_validator("amount")
+    @classmethod
+    def validate_amount(cls, v):
+        if v < 0:
+            raise ValueError("Amount must be non-negative")
+        return v
 
 class AddActivity(BaseModel):
     partner_id: str
@@ -191,16 +379,12 @@ scheduler.start()
 async def add_partner(partner_data: AddPartner, db: Session = Depends(get_db)):
     """Add a new partner to the partners table."""
     try:
-        # Check for duplicate partner_name or email
         if db.query(Partners).filter(Partners.partner_name == partner_data.partner_name).first():
             raise HTTPException(status_code=400, detail=f"Partner name '{partner_data.partner_name}' already exists")
         if partner_data.email and db.query(Partners).filter(Partners.email == partner_data.email).first():
             raise HTTPException(status_code=400, detail=f"Email '{partner_data.email}' already exists")
 
-        # Generate unique partner_id
         partner_id = str(uuid.uuid4())
-
-        # Create partner record
         partner = Partners(
             partner_id=partner_id,
             partner_name=partner_data.partner_name,
@@ -213,24 +397,11 @@ async def add_partner(partner_data: AddPartner, db: Session = Depends(get_db)):
         db.add(partner)
         db.commit()
         db.refresh(partner)
-
         return {"message": "Partner added successfully", "partner_id": partner_id}
-
     except HTTPException as e:
         raise e
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-    
-@app.get("/partners")
-async def get_partners(db: Session = Depends(get_db)):
-    """Retrieve all partners."""
-    try:
-        partners = db.query(Partners).all()
-        if not partners:
-            return {"message": "No partners found"}
-        return [{"partner_id": p.partner_id, "partner_name": p.partner_name, "location": p.location, "total_members": p.total_members} for p in partners]
-    except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/partners")
@@ -264,7 +435,6 @@ async def get_partner_profile(partner_id: str, db: Session = Depends(get_db)):
         partner = db.query(Partners).filter(Partners.partner_id == partner_id).first()
         if not partner:
             raise HTTPException(status_code=404, detail=f"No partner found with ID {partner_id}")
-        
         return {
             "partner_id": partner.partner_id,
             "partner_name": partner.partner_name,
@@ -273,12 +443,12 @@ async def get_partner_profile(partner_id: str, db: Session = Depends(get_db)):
             "total_members": partner.total_members,
             "tel_number": partner.tel_number,
             "email": partner.email,
-            "created_at": partner.created_at,
-            "updated_at": partner.updated_at,
+            "created_at": p.created_at,
+            "updated_at": p.updated_at,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-    
+
 @app.get("/partners/{partner_id}/activities")
 async def get_activities_by_partner(partner_id: str, db: Session = Depends(get_db)):
     """Retrieve activities associated with a specific partner."""
@@ -294,22 +464,16 @@ async def get_activities_by_partner(partner_id: str, db: Session = Depends(get_d
 async def add_activity(activity_data: AddActivity, db: Session = Depends(get_db)):
     """Add a new activity to the mother_activities table."""
     try:
-        # Validate partner_id exists
         partner = db.query(Partners).filter(Partners.partner_id == activity_data.partner_id).first()
         if not partner:
             raise HTTPException(status_code=404, detail=f"Partner with ID '{activity_data.partner_id}' not found")
-
-        # Check for duplicate activity name under the same partner
         if db.query(MotherActivity).filter(
             MotherActivity.partner_id == activity_data.partner_id,
             MotherActivity.name == activity_data.name
         ).first():
             raise HTTPException(status_code=400, detail=f"Activity name '{activity_data.name}' already exists for this partner")
 
-        # Generate unique activity_id
         activity_id = str(uuid.uuid4())
-
-        # Create activity record
         activity = MotherActivity(
             activity_id=activity_id,
             partner_id=activity_data.partner_id,
@@ -320,9 +484,7 @@ async def add_activity(activity_data: AddActivity, db: Session = Depends(get_db)
         db.add(activity)
         db.commit()
         db.refresh(activity)
-
         return {"message": "Activity added successfully", "activity_id": activity_id}
-
     except HTTPException as e:
         raise e
     except Exception as e:
@@ -340,16 +502,316 @@ async def get_activities(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+@app.post("/addDonor")
+async def add_donor(donor_data: AddDonor, db: Session = Depends(get_db)):
+    """Add a new donor to the donors table."""
+    try:
+        if db.query(Donors).filter(Donors.email == donor_data.email).first():
+            raise HTTPException(status_code=400, detail=f"Email '{donor_data.email}' already exists")
+
+        donor_id = str(uuid.uuid4())
+        donor = Donors(
+            donor_id=donor_id,
+            first_name=donor_data.first_name,
+            surname=donor_data.surname,
+            email=donor_data.email,
+            country_of_residence=donor_data.country_of_residence,
+            preferred_activities=donor_data.preferred_activities,
+            total_contributions=0.0
+        )
+        db.add(donor)
+        db.commit()
+        db.refresh(donor)
+        return {"message": "Donor added successfully", "donor_id": donor_id}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/donors")
+async def get_donors(db: Session = Depends(get_db)):
+    """Retrieve all donors."""
+    try:
+        donors = db.query(Donors).all()
+        if not donors:
+            return {"message": "No donors found"}
+        return [
+            {
+                "donor_id": d.donor_id,
+                "first_name": d.first_name,
+                "surname": d.surname,
+                "email": d.email,
+                "country_of_residence": d.country_of_residence,
+                "preferred_activities": d.preferred_activities,
+                "total_contributions": float(d.total_contributions),
+                "created_at": d.created_at,
+                "updated_at": d.updated_at
+            }
+            for d in donors
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/donors/{donor_id}")
+async def get_donor_profile(donor_id: str, db: Session = Depends(get_db)):
+    """Retrieve a donor's profile by ID."""
+    try:
+        donor = db.query(Donors).filter(Donors.donor_id == donor_id).first()
+        if not donor:
+            raise HTTPException(status_code=404, detail=f"No donor found with ID {donor_id}")
+        return {
+            "donor_id": donor.donor_id,
+            "first_name": donor.first_name,
+            "surname": donor.surname,
+            "email": donor.email,
+            "country_of_residence": donor.country_of_residence,
+            "preferred_activities": donor.preferred_activities,
+            "total_contributions": float(donor.total_contributions),
+            "created_at": donor.created_at,
+            "updated_at": donor.updated_at
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.put("/donors/{donor_id}")
+async def update_donor(donor_id: str, donor_data: UpdateDonor, db: Session = Depends(get_db)):
+    """Update a donor's details."""
+    try:
+        donor = db.query(Donors).filter(Donors.donor_id == donor_id).first()
+        if not donor:
+            raise HTTPException(status_code=404, detail=f"No donor found with ID {donor_id}")
+        if donor_data.email and donor_data.email != donor.email and db.query(Donors).filter(Donors.email == donor_data.email).first():
+            raise HTTPException(status_code=400, detail=f"Email '{donor_data.email}' already exists")
+
+        if donor_data.first_name:
+            donor.first_name = donor_data.first_name
+        if donor_data.surname:
+            donor.surname = donor_data.surname
+        if donor_data.email:
+            donor.email = donor_data.email
+        if donor_data.country_of_residence:
+            donor.country_of_residence = donor_data.country_of_residence
+        if donor_data.preferred_activities is not None:
+            donor.preferred_activities = donor_data.preferred_activities
+        donor.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(donor)
+        return {"message": f"Donor {donor_id} updated successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.delete("/donors/{donor_id}")
+async def delete_donor(donor_id: str, db: Session = Depends(get_db)):
+    """Delete a donor if not assigned to any mother."""
+    try:
+        donor = db.query(Donors).filter(Donors.donor_id == donor_id).first()
+        if not donor:
+            raise HTTPException(status_code=404, detail=f"No donor found with ID {donor_id}")
+        if db.query(Mother).filter(Mother.donor_id == donor_id).first():
+            raise HTTPException(status_code=400, detail=f"Donor {donor_id} is assigned to a mother and cannot be deleted")
+        db.delete(donor)
+        db.commit()
+        return {"message": f"Donor {donor_id} deleted successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/donors/{donor_id}/donations")
+async def get_donor_donations(donor_id: str, db: Session = Depends(get_db)):
+    """Retrieve all donations made by a specific donor."""
+    try:
+        donor = db.query(Donors).filter(Donors.donor_id == donor_id).first()
+        if not donor:
+            raise HTTPException(status_code=404, detail=f"No donor found with ID {donor_id}")
+        donations = db.query(DonorContributions).filter(DonorContributions.donor_id == donor_id).all()
+        if not donations:
+            return {"message": f"No donations found for donor {donor_id}"}
+        return [
+            {
+                "id": d.id,
+                "mother_id": d.mother_id,
+                "month_key": d.month_key,
+                "amount": float(d.amount),
+                "created_at": d.created_at,
+                "updated_at": d.updated_at
+            }
+            for d in donations
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/addBusiness")
+async def add_business(business_data: AddBusiness, db: Session = Depends(get_db)):
+    """Add a new business to the businesses table."""
+    try:
+        if db.query(Businesses).filter(Businesses.business_name == business_data.business_name).first():
+            raise HTTPException(status_code=400, detail=f"Business name '{business_data.business_name}' already exists")
+        if db.query(Businesses).filter(Businesses.contact_email == business_data.contact_email).first():
+            raise HTTPException(status_code=400, detail=f"Contact email '{business_data.contact_email}' already exists")
+
+        business_id = str(uuid.uuid4())
+        business = Businesses(
+            business_id=business_id,
+            business_name=business_data.business_name,
+            contact_email=business_data.contact_email,
+            country_of_residence=business_data.country_of_residence,
+            payment_details=business_data.payment_details,
+            subscription_status=business_data.subscription_status,
+            total_contributions=0.0
+        )
+        db.add(business)
+        db.commit()
+        db.refresh(business)
+        return {"message": "Business added successfully", "business_id": business_id}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/businesses")
+async def get_businesses(db: Session = Depends(get_db)):
+    """Retrieve all businesses."""
+    try:
+        businesses = db.query(Businesses).all()
+        if not businesses:
+            return {"message": "No businesses found"}
+        return [
+            {
+                "business_id": b.business_id,
+                "business_name": b.business_name,
+                "contact_email": b.contact_email,
+                "country_of_residence": b.country_of_residence,
+                "payment_details": b.payment_details,
+                "subscription_status": b.subscription_status,
+                "total_contributions": float(b.total_contributions),
+                "created_at": b.created_at,
+                "updated_at": b.updated_at
+            }
+            for b in businesses
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/businesses/{business_id}")
+async def get_business_profile(business_id: str, db: Session = Depends(get_db)):
+    """Retrieve a business's profile by ID."""
+    try:
+        business = db.query(Businesses).filter(Businesses.business_id == business_id).first()
+        if not business:
+            raise HTTPException(status_code=404, detail=f"No business found with ID {business_id}")
+        return {
+            "business_id": business.business_id,
+            "business_name": business.business_name,
+            "contact_email": business.contact_email,
+            "country_of_residence": business.country_of_residence,
+            "payment_details": business.payment_details,
+            "subscription_status": business.subscription_status,
+            "total_contributions": float(b.total_contributions),
+            "created_at": business.created_at,
+            "updated_at": business.updated_at
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.put("/businesses/{business_id}")
+async def update_business(business_id: str, business_data: UpdateBusiness, db: Session = Depends(get_db)):
+    """Update a business's details."""
+    try:
+        business = db.query(Businesses).filter(Businesses.business_id == business_id).first()
+        if not business:
+            raise HTTPException(status_code=404, detail=f"No business found with ID {business_id}")
+        if business_data.business_name and business_data.business_name != business.business_name and db.query(Businesses).filter(Businesses.business_name == business_data.business_name).first():
+            raise HTTPException(status_code=400, detail=f"Business name '{business_data.business_name}' already exists")
+        if business_data.contact_email and business_data.contact_email != business.contact_email and db.query(Businesses).filter(Businesses.contact_email == business_data.contact_email).first():
+            raise HTTPException(status_code=400, detail=f"Contact email '{business_data.contact_email}' already exists")
+
+        if business_data.business_name:
+            business.business_name = business_data.business_name
+        if business_data.contact_email:
+            business.contact_email = business_data.contact_email
+        if business_data.country_of_residence:
+            business.country_of_residence = business_data.country_of_residence
+        if business_data.payment_details is not None:
+            business.payment_details = business_data.payment_details
+        if business_data.subscription_status:
+            business.subscription_status = business_data.subscription_status
+        business.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(business)
+        return {"message": f"Business {business_id} updated successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.delete("/businesses/{business_id}")
+async def delete_business(business_id: str, db: Session = Depends(get_db)):
+    """Delete a business."""
+    try:
+        business = db.query(Businesses).filter(Businesses.business_id == business_id).first()
+        if not business:
+            raise HTTPException(status_code=404, detail=f"No business found with ID {business_id}")
+        db.delete(business)
+        db.commit()
+        return {"message": f"Business {business_id} deleted successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/addDonation")
+async def add_donation(donation_data: AddDonation, db: Session = Depends(get_db)):
+    """Add a donor contribution for a specific mother and month."""
+    try:
+        result = add_donor_contribution(db, donation_data.mother_id, donation_data.donor_email, donation_data.month_key, donation_data.amount)
+        return result
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/mothers/{mother_id}/donations")
+async def get_mother_donations(mother_id: str, db: Session = Depends(get_db)):
+    """Retrieve all donations for a specific mother."""
+    try:
+        mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
+        if not mother:
+            raise HTTPException(status_code=404, detail=f"No mother found with ID {mother_id}")
+        donations = db.query(DonorContributions).filter(DonorContributions.mother_id == mother_id).all()
+        if not donations:
+            return {"message": f"No donations found for mother {mother_id}"}
+        return [
+            {
+                "id": d.id,
+                "donor_id": d.donor_id,
+                "month_key": d.month_key,
+                "amount": float(d.amount),
+                "created_at": d.created_at,
+                "updated_at": d.updated_at
+            }
+            for d in donations
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 @app.post("/addMother")
 async def add_mother(mother_data: AddMother, db: Session = Depends(get_db)):
     """Add a new mother and link to an existing activity via mother_partner_activities."""
     try:
-        # Parse and validate ages of children
         ages = parse_children_ages(mother_data.ages_of_children_per_birth)
         if len(ages) != mother_data.num_children:
             raise HTTPException(status_code=400, detail="Number of children must match ages provided")
 
-        # Generate unique identifier
         generated_id = generate_unique_identifier(
             mother_data.first_name,
             mother_data.surname,
@@ -358,28 +820,22 @@ async def add_mother(mother_data: AddMother, db: Session = Depends(get_db)):
             mother_data.ages_of_children_per_birth
         )
 
-        # Check for duplicate mother
         if db.query(Mother).filter(Mother.mobile_number == mother_data.mobile_number).first():
             raise HTTPException(status_code=400, detail=f"Mobile number {mother_data.mobile_number} is already registered")
-
         if db.query(Mother).filter(Mother.generated_id == generated_id).first():
             raise HTTPException(status_code=400, detail=f"Mother with ID {generated_id} already exists")
 
-        # Validate partner_id if provided for mother
         if mother_data.partner_id:
             partner = db.query(Partners).filter(Partners.partner_id == mother_data.partner_id).first()
             if not partner:
                 raise HTTPException(status_code=404, detail=f"Partner with ID {mother_data.partner_id} not found")
 
-        # Validate activity_id exists
         activity = db.query(MotherActivity).filter(MotherActivity.activity_id == mother_data.activity_id).first()
         if not activity:
             raise HTTPException(status_code=404, detail=f"Activity with ID {mother_data.activity_id} not found")
 
-        # Increment num_people in mother_activities
         activity.num_people += 1
 
-        # Create mother record
         mother = Mother(
             generated_id=generated_id,
             first_name=mother_data.first_name,
@@ -393,29 +849,26 @@ async def add_mother(mother_data: AddMother, db: Session = Depends(get_db)):
             savings=0.0,
             milestone_score=0,
             compliance_score=0,
-            donor_contributions=0.0
+            donor_contributions=0.0,
+            donor_id=None  # Explicitly set to None to prevent automatic assignment
         )
         db.add(mother)
         db.commit()
         db.refresh(mother)
 
-        # Check if mother is already assigned to this activity
         if db.query(MotherPartnerActivity).filter(
             MotherPartnerActivity.mother_id == generated_id,
             MotherPartnerActivity.activity_id == mother_data.activity_id
         ).first():
             raise HTTPException(status_code=400, detail=f"Mother already assigned to activity {mother_data.activity_id}")
 
-        # Create mother_partner_activities record
         mother_partner_activity = MotherPartnerActivity(
             mother_id=generated_id,
             activity_id=mother_data.activity_id
         )
         db.add(mother_partner_activity)
         db.commit()
-
         return {"message": "Mother added successfully", "generated_id": generated_id}
-
     except HTTPException as e:
         raise e
     except ValueError as e:
@@ -445,11 +898,11 @@ async def get_mother_info(mother_id: str, db: Session = Depends(get_db)):
 
         monthly_savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother_id).all()
         monthly_data = {saving.month_key: {
-            "savings": saving.savings,
+            "savings": float(saving.savings),
             "milestone_score": saving.milestone_score,
-            "donor_contribution": saving.donor_contribution
+            "donor_contribution": float(saving.donor_contribution)
         } for saving in monthly_savings}
-        total_savings = sum(saving.savings for saving in monthly_savings)
+        total_savings = sum(float(saving.savings) for saving in monthly_savings)
 
         return {
             "first_name": mother.first_name,
@@ -458,7 +911,9 @@ async def get_mother_info(mother_id: str, db: Session = Depends(get_db)):
             "monthly_data": monthly_data,
             "activity_points": mother.activity_points,
             "milestone_score": mother.milestone_score,
-            "compliance_score": mother.compliance_score
+            "compliance_score": mother.compliance_score,
+            "donor_contributions": float(mother.donor_contributions),
+            "donor_id": mother.donor_id
         }
     except HTTPException as e:
         raise e
@@ -482,15 +937,12 @@ async def add_savings(mother_id: str, savings_data: SavingsEntry, db: Session = 
             raise HTTPException(status_code=400, detail="Month must be between 1 and 12")
         month_key = f"{datetime.now().year}-{current_month:02d}"
 
-        # Convert savings_data.amount to Decimal
         amount = Decimal(str(savings_data.amount))
-
-        # Update monthly savings
         savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother_id, MonthlySavings.month_key == month_key).first()
         if savings:
-            current_savings = savings.savings  # Decimal from database
+            current_savings = savings.savings
         else:
-            current_savings = Decimal('0.00')  # Use Decimal instead of float
+            current_savings = Decimal('0.00')
             savings = MonthlySavings(mother_id=mother_id, month_key=month_key)
 
         new_savings = current_savings + amount
@@ -502,11 +954,9 @@ async def add_savings(mother_id: str, savings_data: SavingsEntry, db: Session = 
             db.add(savings)
         db.commit()
 
-        # Update total savings in mothers table
         mother.savings += amount
         db.commit()
 
-        # Recalculate compliance score
         compliance_score = update_compliance_score(db, mother_id, current_month)
         mother.compliance_score = compliance_score
         db.commit()
@@ -535,43 +985,22 @@ async def get_monthly_savings(mother_id: str, db: Session = Depends(get_db)):
         return [{"month_key": s.month_key, "savings": float(s.savings), "milestone_score": s.milestone_score, "donor_contribution": float(s.donor_contribution)} for s in savings]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-    
 
 @app.get("/monthly-savings")
 async def get_all_monthly_savings(month: Union[str, None] = None, db: Session = Depends(get_db)):
-    """
-    Retrieve all monthly savings for all mothers.
-    Optionally filter by a specific month using the 'month' query parameter (format: YYYY-MM).
-    """
+    """Retrieve all monthly savings for all mothers, optionally filtered by month (YYYY-MM)."""
     try:
-        # Query all monthly savings
         if month:
-            # Filter by the given month
             savings = db.query(MonthlySavings).filter(MonthlySavings.month_key == month).all()
         else:
-            # Retrieve all savings if no month is specified
             savings = db.query(MonthlySavings).all()
 
         if not savings:
             return {"message": "No savings found"}
-
-        # Format the response
-        result = [
-            {
-                "mother_id": s.mother_id,
-                "month_key": s.month_key,
-                "savings": float(s.savings),
-                "milestone_score": s.milestone_score,
-                "donor_contribution": float(s.donor_contribution),
-            }
-            for s in savings
-        ]
-
-        return {"monthly_savings": result}
-
+        return [{"mother_id": s.mother_id, "month_key": s.month_key, "savings": float(s.savings), "milestone_score": s.milestone_score, "donor_contribution": float(s.donor_contribution)} for s in savings]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-    
+
 @app.get("/mothers/{mother_id}/monthly-activities")
 async def get_monthly_activities(mother_id: str, db: Session = Depends(get_db)):
     """Retrieve monthly activities for a specific mother."""
@@ -616,20 +1045,20 @@ async def donor_view(db: Session = Depends(get_db)):
             monthly_savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother.generated_id).all()
             monthly_data = {}
             total_user_savings = 0
-            total_donor_contributions = mother.donor_contributions
+            total_donor_contributions = float(mother.donor_contributions)
 
             for saving in monthly_savings:
                 monthly_data[saving.month_key] = {
-                    "user_savings": saving.savings,
-                    "donor_contribution": saving.donor_contribution
+                    "user_savings": float(saving.savings),
+                    "donor_contribution": float(saving.donor_contribution)
                 }
-                total_user_savings += saving.savings
+                total_user_savings += float(saving.savings)
 
             donor_data.append({
                 "mother_id": mother.generated_id,
                 "first_name": mother.first_name,
                 "surname": mother.surname,
-                "total_savings": mother.savings,
+                "total_savings": float(mother.savings),
                 "total_user_savings": total_user_savings,
                 "total_donor_contributions": total_donor_contributions,
                 "monthly_data": monthly_data
