@@ -30,12 +30,12 @@ def get_db():
 def validate_education_level(education_level):
     """Validate education level against allowed options."""
     valid_levels = [
-        "University",
-        "'A' level",
-        "'O' level",
-        "Primary 7",
-        "Primary 5",
-        "Never"
+        "Finished University",
+        "Started 'A' Level",
+        "Started 'O' Level",
+        "Finished Primary 7",
+        "Finished Primary 5",
+        "Never went to school"
     ]
     if education_level not in valid_levels:
         raise ValueError(f"Invalid education level: {education_level}. Must be one of {valid_levels}")
@@ -353,27 +353,27 @@ def import_excel_data(file_path: str, partner_id: str, activity_id: str, db: Ses
             "activity_compliance": {"inserted": [], "skipped": [], "errors": []}
         }
 
-        # # Process AddActivity sheet
+        # Process AddActivity sheet
         # if 'AddActivity' in xls.sheet_names:
         #     df_activity = pd.read_excel(xls, 'AddActivity')
         #     print("AddActivity columns:", list(df_activity.columns))
         #     results['add_activity'] = process_add_activity_sheet(df_activity, partner_id, db)
 
         # Process Profiles sheet
-        # if 'Profiles' in xls.sheet_names:
-        #     df_profiles = pd.read_excel(xls, 'Profiles')
-        #     results['profiles'] = process_profiles_sheet(df_profiles, partner_id, activity_id, db)
+        if 'Profiles' in xls.sheet_names:
+            df_profiles = pd.read_excel(xls, 'Profiles')
+            results['profiles'] = process_profiles_sheet(df_profiles, partner_id, activity_id, db)
 
         # # Process Activity compliance sheet
-        if 'Activity compliance' in xls.sheet_names:
-            df_compliance = pd.read_excel(xls, 'Activity compliance')
-            results['activity_compliance'] = process_activity_compliance_sheet(df_compliance, db)
+        # if 'Activity compliance' in xls.sheet_names:
+        #     df_compliance = pd.read_excel(xls, 'Activity compliance')
+        #     results['activity_compliance'] = process_activity_compliance_sheet(df_compliance, db)
 
-        logger.info("Excel import completed successfully")
-        return {
-            "message": "Excel data imported successfully",
-            "details": results
-        }
+        # logger.info("Excel import completed successfully")
+        # return {
+        #     "message": "Excel data imported successfully",
+        #     "details": results
+        # }
 
     except ValueError as e:
         logger.error(f"Excel import failed: {str(e)}")
@@ -386,8 +386,8 @@ def import_excel_data(file_path: str, partner_id: str, activity_id: str, db: Ses
 if __name__ == "__main__":
     # Example usage
     file_path = "/Users/user/Documents/CARIYA/cariya_wallet/Backend/utils/data/Okere City Mothers.xlsx"
-    partner_id = "4d3d5e7e-811d-44f3-8a61-b47b02d49941"  # Replace with actual partner_id
-    activity_id = "8cc8137f-efcd-4a11-9268-6bf4fbd1619f"  # Replace with actual activity_id
+    partner_id = "aa79a4b5-7cae-4f43-9523-b20b5084b0ff"  # Replace with actual partner_id
+    activity_id = "6a232ada-06bb-4ed9-b334-fada4b6c0886"  # Replace with actual activity_id
     db_session = next(get_db())
     result = import_excel_data(file_path, partner_id, activity_id, db_session)
     print(result)

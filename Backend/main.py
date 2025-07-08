@@ -406,13 +406,18 @@ async def add_partner(partner_data: AddPartner, db: Session = Depends(get_db)):
 
 @app.get("/partners")
 async def get_partners(db: Session = Depends(get_db)):
-    """Retrieve all partners."""
+    """Retrieve all partners with their activities and number of associated mothers."""
     try:
         partners = db.query(Partners).all()
         if not partners:
             return {"message": "No partners found"}
-        return [
-            {
+        result = []
+        for p in partners:
+            # Fetch activities for the partner
+            activities = db.query(MotherActivity).filter(MotherActivity.partner_id == p.partner_id).all()
+            # Count mothers associated with the partner
+            mother_count = db.query(Mother).filter(Mother.partner_id == p.partner_id).count()
+            result.append({
                 "partner_id": p.partner_id,
                 "partner_name": p.partner_name,
                 "description": p.description,
@@ -422,19 +427,31 @@ async def get_partners(db: Session = Depends(get_db)):
                 "email": p.email,
                 "created_at": p.created_at,
                 "updated_at": p.updated_at,
-            }
-            for p in partners
-        ]
+                "activities": [
+                    {
+                        "activity_id": a.activity_id,
+                        "name": a.name,
+                        "description": a.description,
+                        "num_people": a.num_people
+                    } for a in activities
+                ],
+                "mother_count": mother_count
+            })
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/partners/{partner_id}")
 async def get_partner_profile(partner_id: str, db: Session = Depends(get_db)):
-    """Retrieve a partner's profile by ID."""
+    """Retrieve a partner's profile by ID with their activities and number of associated mothers."""
     try:
         partner = db.query(Partners).filter(Partners.partner_id == partner_id).first()
         if not partner:
             raise HTTPException(status_code=404, detail=f"No partner found with ID {partner_id}")
+        # Fetch activities for the partner
+        activities = db.query(MotherActivity).filter(MotherActivity.partner_id == partner_id).all()
+        # Count mothers associated with the partner
+        mother_count = db.query(Mother).filter(Mother.partner_id == partner_id).count()
         return {
             "partner_id": partner.partner_id,
             "partner_name": partner.partner_name,
@@ -443,8 +460,17 @@ async def get_partner_profile(partner_id: str, db: Session = Depends(get_db)):
             "total_members": partner.total_members,
             "tel_number": partner.tel_number,
             "email": partner.email,
-            "created_at": p.created_at,
-            "updated_at": p.updated_at,
+            "created_at": partner.created_at,
+            "updated_at": partner.updated_at,
+            "activities": [
+                {
+                    "activity_id": a.activity_id,
+                    "name": a.name,
+                    "description": a.description,
+                    "num_people": a.num_people
+                } for a in activities
+            ],
+            "mother_count": mother_count
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
@@ -531,13 +557,49 @@ async def add_donor(donor_data: AddDonor, db: Session = Depends(get_db)):
 
 @app.get("/donors")
 async def get_donors(db: Session = Depends(get_db)):
-    """Retrieve all donors."""
+    """Retrieve all donors with their associated mother ID, total contributions, and mother profile."""
     try:
         donors = db.query(Donors).all()
         if not donors:
             return {"message": "No donors found"}
-        return [
-            {
+        result = []
+        for d in donors:
+            # Fetch mother associated with the donor
+            mother = db.query(Mother).filter(Mother.donor_id == d.donor_id).first()
+            mother_profile = None
+            mother_id = None
+            if mother:
+                mother_id = mother.generated_id
+                # Fetch activities for the mother
+                mother_activities = db.query(MotherPartnerActivity).filter(MotherPartnerActivity.mother_id == mother.generated_id).all()
+                activities = []
+                for ma in mother_activities:
+                    activity = db.query(MotherActivity).filter(MotherActivity.activity_id == ma.activity_id).first()
+                    if activity:
+                        activities.append({
+                            "activity_id": activity.activity_id,
+                            "name": activity.name,
+                            "description": activity.description,
+                            "num_people": activity.num_people
+                        })
+                # Fetch monthly savings sum
+                monthly_savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother.generated_id).all()
+                total_savings = sum(float(saving.savings) for saving in monthly_savings)
+                # Fetch compliance score
+                current_month = min(datetime.now().month, 4)
+                max_compliance = current_month * 2
+                compliance_score = f"{mother.compliance_score}/{max_compliance}"
+                mother_profile = {
+                    "generated_id": mother.generated_id,
+                    "first_name": mother.first_name,
+                    "surname": mother.surname,
+                    "mobile_number": mother.mobile_number,
+                    "num_children": mother.num_children,
+                    "activities": activities,
+                    "compliance_score": compliance_score,
+                    "total_monthly_savings": total_savings
+                }
+            result.append({
                 "donor_id": d.donor_id,
                 "first_name": d.first_name,
                 "surname": d.surname,
@@ -546,20 +608,56 @@ async def get_donors(db: Session = Depends(get_db)):
                 "preferred_activities": d.preferred_activities,
                 "total_contributions": float(d.total_contributions),
                 "created_at": d.created_at,
-                "updated_at": d.updated_at
-            }
-            for d in donors
-        ]
+                "updated_at": d.updated_at,
+                "mother_id": mother_id,
+                "mother_profile": mother_profile
+            })
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/donors/{donor_id}")
 async def get_donor_profile(donor_id: str, db: Session = Depends(get_db)):
-    """Retrieve a donor's profile by ID."""
+    """Retrieve a donor's profile by ID with associated mother ID, total contributions, and mother profile."""
     try:
         donor = db.query(Donors).filter(Donors.donor_id == donor_id).first()
         if not donor:
             raise HTTPException(status_code=404, detail=f"No donor found with ID {donor_id}")
+        # Fetch mother associated with the donor
+        mother = db.query(Mother).filter(Mother.donor_id == donor_id).first()
+        mother_profile = None
+        mother_id = None
+        if mother:
+            mother_id = mother.generated_id
+            # Fetch activities for the mother
+            mother_activities = db.query(MotherPartnerActivity).filter(MotherPartnerActivity.mother_id == mother.generated_id).all()
+            activities = []
+            for ma in mother_activities:
+                activity = db.query(MotherActivity).filter(MotherActivity.activity_id == ma.activity_id).first()
+                if activity:
+                    activities.append({
+                        "activity_id": activity.activity_id,
+                        "name": activity.name,
+                        "description": activity.description,
+                        "num_people": activity.num_people
+                    })
+            # Fetch monthly savings sum
+            monthly_savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother.generated_id).all()
+            total_savings = sum(float(saving.savings) for saving in monthly_savings)
+            # Fetch compliance score
+            current_month = min(datetime.now().month, 4)
+            max_compliance = current_month * 2
+            compliance_score = f"{mother.compliance_score}/{max_compliance}"
+            mother_profile = {
+                "generated_id": mother.generated_id,
+                "first_name": mother.first_name,
+                "surname": mother.surname,
+                "mobile_number": mother.mobile_number,
+                "num_children": mother.num_children,
+                "activities": activities,
+                "compliance_score": compliance_score,
+                "total_monthly_savings": total_savings
+            }
         return {
             "donor_id": donor.donor_id,
             "first_name": donor.first_name,
@@ -569,7 +667,9 @@ async def get_donor_profile(donor_id: str, db: Session = Depends(get_db)):
             "preferred_activities": donor.preferred_activities,
             "total_contributions": float(donor.total_contributions),
             "created_at": donor.created_at,
-            "updated_at": donor.updated_at
+            "updated_at": donor.updated_at,
+            "mother_id": mother_id,
+            "mother_profile": mother_profile
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
@@ -644,128 +744,6 @@ async def get_donor_donations(donor_id: str, db: Session = Depends(get_db)):
             for d in donations
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.post("/addBusiness")
-async def add_business(business_data: AddBusiness, db: Session = Depends(get_db)):
-    """Add a new business to the businesses table."""
-    try:
-        if db.query(Businesses).filter(Businesses.business_name == business_data.business_name).first():
-            raise HTTPException(status_code=400, detail=f"Business name '{business_data.business_name}' already exists")
-        if db.query(Businesses).filter(Businesses.contact_email == business_data.contact_email).first():
-            raise HTTPException(status_code=400, detail=f"Contact email '{business_data.contact_email}' already exists")
-
-        business_id = str(uuid.uuid4())
-        business = Businesses(
-            business_id=business_id,
-            business_name=business_data.business_name,
-            contact_email=business_data.contact_email,
-            country_of_residence=business_data.country_of_residence,
-            payment_details=business_data.payment_details,
-            subscription_status=business_data.subscription_status,
-            total_contributions=0.0
-        )
-        db.add(business)
-        db.commit()
-        db.refresh(business)
-        return {"message": "Business added successfully", "business_id": business_id}
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.get("/businesses")
-async def get_businesses(db: Session = Depends(get_db)):
-    """Retrieve all businesses."""
-    try:
-        businesses = db.query(Businesses).all()
-        if not businesses:
-            return {"message": "No businesses found"}
-        return [
-            {
-                "business_id": b.business_id,
-                "business_name": b.business_name,
-                "contact_email": b.contact_email,
-                "country_of_residence": b.country_of_residence,
-                "payment_details": b.payment_details,
-                "subscription_status": b.subscription_status,
-                "total_contributions": float(b.total_contributions),
-                "created_at": b.created_at,
-                "updated_at": b.updated_at
-            }
-            for b in businesses
-        ]
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.get("/businesses/{business_id}")
-async def get_business_profile(business_id: str, db: Session = Depends(get_db)):
-    """Retrieve a business's profile by ID."""
-    try:
-        business = db.query(Businesses).filter(Businesses.business_id == business_id).first()
-        if not business:
-            raise HTTPException(status_code=404, detail=f"No business found with ID {business_id}")
-        return {
-            "business_id": business.business_id,
-            "business_name": business.business_name,
-            "contact_email": business.contact_email,
-            "country_of_residence": business.country_of_residence,
-            "payment_details": business.payment_details,
-            "subscription_status": business.subscription_status,
-            "total_contributions": float(b.total_contributions),
-            "created_at": business.created_at,
-            "updated_at": business.updated_at
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.put("/businesses/{business_id}")
-async def update_business(business_id: str, business_data: UpdateBusiness, db: Session = Depends(get_db)):
-    """Update a business's details."""
-    try:
-        business = db.query(Businesses).filter(Businesses.business_id == business_id).first()
-        if not business:
-            raise HTTPException(status_code=404, detail=f"No business found with ID {business_id}")
-        if business_data.business_name and business_data.business_name != business.business_name and db.query(Businesses).filter(Businesses.business_name == business_data.business_name).first():
-            raise HTTPException(status_code=400, detail=f"Business name '{business_data.business_name}' already exists")
-        if business_data.contact_email and business_data.contact_email != business.contact_email and db.query(Businesses).filter(Businesses.contact_email == business_data.contact_email).first():
-            raise HTTPException(status_code=400, detail=f"Contact email '{business_data.contact_email}' already exists")
-
-        if business_data.business_name:
-            business.business_name = business_data.business_name
-        if business_data.contact_email:
-            business.contact_email = business_data.contact_email
-        if business_data.country_of_residence:
-            business.country_of_residence = business_data.country_of_residence
-        if business_data.payment_details is not None:
-            business.payment_details = business_data.payment_details
-        if business_data.subscription_status:
-            business.subscription_status = business_data.subscription_status
-        business.updated_at = datetime.utcnow()
-        db.commit()
-        db.refresh(business)
-        return {"message": f"Business {business_id} updated successfully"}
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@app.delete("/businesses/{business_id}")
-async def delete_business(business_id: str, db: Session = Depends(get_db)):
-    """Delete a business."""
-    try:
-        business = db.query(Businesses).filter(Businesses.business_id == business_id).first()
-        if not business:
-            raise HTTPException(status_code=404, detail=f"No business found with ID {business_id}")
-        db.delete(business)
-        db.commit()
-        return {"message": f"Business {business_id} deleted successfully"}
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/addDonation")
@@ -879,18 +857,79 @@ async def add_mother(mother_data: AddMother, db: Session = Depends(get_db)):
 
 @app.get("/mothers")
 async def get_mothers(db: Session = Depends(get_db)):
-    """Retrieve all mothers."""
+    """Retrieve all mothers with their complete profile, activities, compliance results, sum of monthly savings, and donor profile."""
     try:
         mothers = db.query(Mother).all()
         if not mothers:
             return {"message": "No mothers found"}
-        return [{"generated_id": m.generated_id, "first_name": m.first_name, "surname": m.surname, "mobile_number": m.mobile_number, "num_children": m.num_children} for m in mothers]
+        result = []
+        for m in mothers:
+            # Fetch activities for the mother
+            mother_activities = db.query(MotherPartnerActivity).filter(MotherPartnerActivity.mother_id == m.generated_id).all()
+            activities = []
+            for ma in mother_activities:
+                activity = db.query(MotherActivity).filter(MotherActivity.activity_id == ma.activity_id).first()
+                if activity:
+                    activities.append({
+                        "activity_id": activity.activity_id,
+                        "name": activity.name,
+                        "description": activity.description,
+                        "num_people": activity.num_people,
+                        "created_at": activity.created_at
+                    })
+            # Fetch monthly savings sum
+            monthly_savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == m.generated_id).all()
+            total_monthly_savings = sum(float(saving.savings) for saving in monthly_savings)
+            # Fetch compliance score
+            current_month = min(datetime.now().month, 4)
+            max_compliance = current_month * 2
+            compliance_score = f"{m.compliance_score}/{max_compliance}"
+            # Fetch donor profile if exists
+            donor_profile = None
+            if m.donor_id:
+                donor = db.query(Donors).filter(Donors.donor_id == m.donor_id).first()
+                if donor:
+                    donor_profile = {
+                        "donor_id": donor.donor_id,
+                        "first_name": donor.first_name,
+                        "surname": donor.surname,
+                        "email": donor.email,
+                        "country_of_residence": donor.country_of_residence,
+                        "preferred_activities": donor.preferred_activities,
+                        "total_contributions": float(donor.total_contributions),
+                        "created_at": donor.created_at,
+                        "updated_at": donor.updated_at
+                    }
+            result.append({
+                "generated_id": m.generated_id,
+                "first_name": m.first_name,
+                "surname": m.surname,
+                "mobile_number": m.mobile_number,
+                "num_children": m.num_children,
+                "ages_of_children": m.ages_of_children,
+                "activity_points": m.activity_points,
+                "savings": float(m.savings),
+                "milestone_score": m.milestone_score,
+                "compliance_score": compliance_score,
+                "donor_contributions": float(m.donor_contributions),
+                "partner_id": m.partner_id,
+                "donor_id": m.donor_id,
+                "location": m.location,
+                "education_level": m.education_level,
+                "nin": m.nin,
+                "created_at": m.created_at,
+                "updated_at": m.updated_at,
+                "activities": activities,
+                "total_monthly_savings": total_monthly_savings,
+                "donor_profile": donor_profile
+            })
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/mothers/{mother_id}")
 async def get_mother_info(mother_id: str, db: Session = Depends(get_db)):
-    """Retrieve mother information."""
+    """Retrieve mother information with activities, compliance results, sum of monthly savings, and donor profile."""
     try:
         mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
         if not mother:
@@ -904,21 +943,70 @@ async def get_mother_info(mother_id: str, db: Session = Depends(get_db)):
         } for saving in monthly_savings}
         total_savings = sum(float(saving.savings) for saving in monthly_savings)
 
+        # Fetch activities for the mother
+        mother_activities = db.query(MotherPartnerActivity).filter(MotherPartnerActivity.mother_id == mother_id).all()
+        activities = []
+        for ma in mother_activities:
+            activity = db.query(MotherActivity).filter(MotherActivity.activity_id == ma.activity_id).first()
+            if activity:
+                activities.append({
+                    "activity_id": activity.activity_id,
+                    "name": activity.name,
+                    "description": activity.description,
+                    "num_people": activity.num_people,
+                    "created_at": activity.created_at
+                })
+
+        # Fetch compliance score
+        current_month = min(datetime.now().month, 4)
+        max_compliance = current_month * 2
+        compliance_score = f"{mother.compliance_score}/{max_compliance}"
+
+        # Fetch donor profile if exists
+        donor_profile = None
+        if mother.donor_id:
+            donor = db.query(Donors).filter(Donors.donor_id == mother.donor_id).first()
+            if donor:
+                donor_profile = {
+                    "donor_id": donor.donor_id,
+                    "first_name": donor.first_name,
+                    "surname": donor.surname,
+                    "email": donor.email,
+                    "country_of_residence": donor.country_of_residence,
+                    "preferred_activities": donor.preferred_activities,
+                    "total_contributions": float(donor.total_contributions),
+                    "created_at": donor.created_at,
+                    "updated_at": donor.updated_at
+                }
+
         return {
+            "generated_id": mother.generated_id,
             "first_name": mother.first_name,
             "surname": mother.surname,
-            "total_savings": total_savings,
-            "monthly_data": monthly_data,
+            "mobile_number": mother.mobile_number,
+            "num_children": mother.num_children,
+            "ages_of_children": mother.ages_of_children,
             "activity_points": mother.activity_points,
+            "savings": float(mother.savings),
             "milestone_score": mother.milestone_score,
-            "compliance_score": mother.compliance_score,
+            "compliance_score": compliance_score,
             "donor_contributions": float(mother.donor_contributions),
-            "donor_id": mother.donor_id
+            "partner_id": mother.partner_id,
+            "donor_id": mother.donor_id,
+            "location": mother.location,
+            "education_level": mother.education_level,
+            "nin": mother.nin,
+            "created_at": mother.created_at,
+            "updated_at": mother.updated_at,
+            "activities": activities,
+            "total_monthly_savings": total_savings,
+            "monthly_data": monthly_data,
+            "donor_profile": donor_profile
         }
     except HTTPException as e:
         raise e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.post("/mothers/{mother_id}/savings")
 async def add_savings(mother_id: str, savings_data: SavingsEntry, db: Session = Depends(get_db)):
