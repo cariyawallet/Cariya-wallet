@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     DateTime,
     CheckConstraint,
+    Enum,
 )
 from sqlalchemy.orm import declarative_base
 
@@ -24,6 +25,30 @@ class Partners(Base):
     total_members = Column(Integer, nullable=False, default=0, info={"check_constraint": CheckConstraint("total_members >= 0")})
     tel_number = Column(String(13))
     email = Column(String(255), unique=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class PartnerSubscriptions(Base):
+    """Tracks subscription details for partners."""
+    __tablename__ = "partner_subscriptions"
+    subscription_id = Column(String(50), primary_key=True)
+    partner_id = Column(String(50), ForeignKey("partners.partner_id", ondelete="CASCADE"), nullable=False)
+    subscription_tier = Column(Enum("Basic", "Gold", "Platinum", name="subscription_tier"), nullable=False, default="Basic")
+    subscription_status = Column(String(20), nullable=False, default="pending", info={"check_constraint": CheckConstraint("subscription_status IN ('active', 'inactive', 'pending', 'expired')")})
+    start_date = Column(DateTime, nullable=False, default=datetime.utcnow)
+    end_date = Column(DateTime)
+    payment_details = Column(String)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class PartnerContributions(Base):
+    """Tracks match funding contributions from partners to mothers."""
+    __tablename__ = "partner_contributions"
+    id = Column(Integer, primary_key=True)
+    partner_id = Column(String(50), ForeignKey("partners.partner_id", ondelete="CASCADE"), nullable=False)
+    mother_id = Column(String(50), ForeignKey("mothers.generated_id", ondelete="CASCADE"), nullable=False)
+    month_key = Column(String(7), nullable=False)
+    amount = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("amount >= 0")})
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
@@ -103,6 +128,7 @@ class MonthlySavings(Base):
     savings = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("savings >= 0")})
     milestone_score = Column(Integer, nullable=False, default=0, info={"check_constraint": CheckConstraint("milestone_score IN (0, 1)")})
     donor_contribution = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("donor_contribution >= 0")})
+    partner_contribution = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("partner_contribution >= 0")})
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
@@ -127,10 +153,3 @@ class DonorContributions(Base):
     amount = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("amount >= 0")})
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-
-# from sqlalchemy import create_engine
-# from models import Base
-# DATABASE_URL = "postgresql://cariyadb_user:hOZPY44VmR4vQv8P9OFzwCOHdShXrGBv@dpg-d1972anfte5s73c2rao0-a.oregon-postgres.render.com/cariyadb"
-# engine = create_engine(DATABASE_URL)
-# Base.metadata.create_all(bind=engine)
-# print("Schema applied successfully")

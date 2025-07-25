@@ -10,7 +10,7 @@ db = SessionLocal()
 
 try:
     # Calculate scores for April 2025
-    result = calculate_monthly_scores(db, target_month=6)
+    result = calculate_monthly_scores(db, target_month=7)
     print(result)
     # Segment mothers
     trends = segment_mothers_and_analyze_trends(db)

@@ -1,9 +1,11 @@
 from datetime import datetime
 import logging
+import re
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from utils.models import Mother, MonthlyActivityModel, MonthlySavings, Donors, DonorContributions
+from models import Mother, MonthlyActivityModel, MonthlySavings, Donors, DonorContributions, Partners, PartnerSubscriptions, PartnerContributions
 from fastapi import HTTPException
+import uuid
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -72,14 +74,14 @@ def add_donor_contribution(db: Session, mother_id: str, donor_email: str, month_
     try:
         if not isinstance(amount, (int, float)) or amount < 0:
             raise ValueError("Amount must be a non-negative number")
-        if not month_key or not month_key.match(r"^\d{4}-[0-1][0-9]$"):
+        if not month_key or not re.match(r"^\d{4}-[0-1][0-9]$", month_key):
             raise ValueError("Invalid month_key format. Expected YYYY-MM")
 
         mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
         if not mother:
             raise ValueError(f"No mother found with generated_id {mother_id}")
         if not mother.donor_id:
-            raise ValueError(f"Mother {mother_id} has no assigned donor")
+            raise ValueError(f" {mother_id} has no assigned donor")
 
         donor = db.query(Donors).filter(Donors.email == donor_email).first()
         if not donor:
@@ -105,7 +107,8 @@ def add_donor_contribution(db: Session, mother_id: str, donor_email: str, month_
                 month_key=month_key,
                 savings=0.0,
                 milestone_score=0,
-                donor_contribution=amount
+                donor_contribution=amount,
+                partner_contribution=0.0
             )
             db.add(savings)
         else:
@@ -133,6 +136,85 @@ def add_donor_contribution(db: Session, mother_id: str, donor_email: str, month_
         logger.error(f"Error adding donor contribution: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error adding donor contribution: {str(e)}")
 
+def add_partner_contribution(db: Session, mother_id: str, partner_id: str, month_key: str, amount: float) -> dict:
+    """Add a partner match funding contribution for a specific mother and month."""
+    try:
+        if not isinstance(amount, (int, float)) or amount < 0:
+            raise ValueError("Amount must be a non-negative number")
+        if not month_key or not re.match(r"^\d{4}-[0-1][0-9]$", month_key):
+            raise ValueError("Invalid month_key format. Expected YYYY-MM")
+
+        mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
+        if not mother:
+            raise ValueError(f"No mother found with generated_id {mother_id}")
+        if mother.partner_id != partner_id:
+            raise ValueError(f"Mother {mother_id} is not associated with partner {partner_id}")
+
+        partner = db.query(Partners).filter(Partners.partner_id == partner_id).first()
+        if not partner:
+            raise ValueError(f"No partner found with partner_id {partner_id}")
+
+        subscription = db.query(PartnerSubscriptions).filter(PartnerSubscriptions.partner_id == partner_id).first()
+        if not subscription or subscription.subscription_status != "active":
+            raise ValueError(f"Partner {partner_id} does not have an active subscription")
+
+        max_contribution = 0
+        if subscription.subscription_tier == "Basic":
+            max_contribution = 100000
+        elif subscription.subscription_tier == "Gold":
+            max_contribution = 600000
+        elif subscription.subscription_tier == "Platinum":
+            max_contribution = 200000
+
+        if amount > max_contribution:
+            raise ValueError(f"Contribution amount {amount} exceeds maximum allowed ({max_contribution} UGX) for {subscription.subscription_tier} tier")
+
+        existing_contribution = db.query(PartnerContributions).filter(
+            PartnerContributions.mother_id == mother_id,
+            PartnerContributions.partner_id == partner_id,
+            PartnerContributions.month_key == month_key
+        ).first()
+        if existing_contribution:
+            raise ValueError(f"Partner contribution already exists for mother {mother_id} in {month_key}")
+
+        savings = db.query(MonthlySavings).filter(
+            MonthlySavings.mother_id == mother_id,
+            MonthlySavings.month_key == month_key
+        ).first()
+        if not savings:
+            savings = MonthlySavings(
+                mother_id=mother_id,
+                month_key=month_key,
+                savings=0.0,
+                milestone_score=0,
+                donor_contribution=0.0,
+                partner_contribution=amount
+            )
+            db.add(savings)
+        else:
+            savings.partner_contribution = amount
+            savings.updated_at = datetime.utcnow()
+
+        contribution = PartnerContributions(
+            partner_id=partner_id,
+            mother_id=mother_id,
+            month_key=month_key,
+            amount=amount
+        )
+        db.add(contribution)
+        partner.total_members = db.query(Mother).filter(Mother.partner_id == partner_id).count()
+        mother.savings += amount
+        mother.updated_at = datetime.utcnow()
+        partner.updated_at = datetime.utcnow()
+        db.flush()
+        logger.info(f"Added partner contribution for mother {mother_id} by partner {partner_id} in {month_key}: {amount}")
+        db.commit()
+        return {"message": f"Partner contribution of {amount} UGX added for mother {mother_id} in {month_key}"}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error adding partner contribution: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error adding partner contribution: {str(e)}")
+
 def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
     """Calculate and update scores for all mothers at the end of the month."""
     try:
@@ -146,7 +228,7 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
         month_key = f"{current_year}-{target_month:02d}"
         logger.info(f"Calculating scores for month: {month_key}")
 
-        mothers = db.query(Mother).all()  # Process all mothers
+        mothers = db.query(Mother).all()
         if not mothers:
             return {"message": "No mothers found to process"}
 
@@ -176,7 +258,8 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
                     month_key=month_key,
                     savings=monthly_savings,
                     milestone_score=milestone_score,
-                    donor_contribution=0.0
+                    donor_contribution=0.0,
+                    partner_contribution=0.0
                 )
                 db.add(savings)
             db.flush()
@@ -191,7 +274,6 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
 
         db.commit()
         return {"message": f"Scores calculated for month {month_key}"}
-
     except Exception as e:
         db.rollback()
         logger.error(f"Error calculating monthly scores: {str(e)}")
@@ -226,7 +308,8 @@ def segment_mothers_and_analyze_trends(db: Session) -> dict:
                 "compliance_score": compliance_score,
                 "total_savings": float(mother.savings),
                 "activity_points": mother.activity_points,
-                "donor_id": mother.donor_id
+                "donor_id": mother.donor_id,
+                "partner_id": mother.partner_id
             }
 
             if compliance_score >= max_possible_score * 0.75:
@@ -281,11 +364,9 @@ def segment_mothers_and_analyze_trends(db: Session) -> dict:
             },
             "insights": insights
         }
-
     except Exception as e:
         logger.error(f"Error segmenting mothers: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error segmenting mothers: {str(e)}")
-    
 
 def assign_donor_to_mother(db: Session, mother_id: str, donor_email: str) -> dict:
     """Assign a donor to a mother, ensuring one-to-one matching."""

@@ -12,7 +12,7 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from utils.unique_identifier_funcs import normalize_mobile_number, parse_children_ages, generate_unique_identifier
 from utils.helpers import calculate_expected_savings, update_activity_points, update_compliance_score, calculate_monthly_scores, add_donor_contribution, segment_mothers_and_analyze_trends
-from utils.models import Mother, MotherActivity, MotherPartnerActivity, MonthlySavings, MonthlyActivityModel, Partners, Donors, Businesses, DonorContributions, Base
+from utils.models import Mother, MotherActivity, MotherPartnerActivity, MonthlySavings, MonthlyActivityModel, Partners, Donors,DonorContributions,PartnerSubscriptions, PartnerContributions,Base
 
 DATABASE_URL = "postgresql://cariyadb_user:hOZPY44VmR4vQv8P9OFzwCOHdShXrGBv@dpg-d1972anfte5s73c2rao0-a.oregon-postgres.render.com/cariyadb"
 if not DATABASE_URL:
@@ -83,6 +83,79 @@ class AddPartner(BaseModel):
             raise ValueError("Invalid email format")
         return v.strip()
 
+class AddPartnerSubscription(BaseModel):
+    partner_id: str
+    subscription_tier: str
+    payment_details: Union[str, None]
+
+    @field_validator("partner_id")
+    @classmethod
+    def validate_partner_id(cls, v):
+        if len(v) > 50:
+            raise ValueError("Partner ID must be 50 characters or less")
+        return v
+
+    @field_validator("subscription_tier")
+    @classmethod
+    def validate_subscription_tier(cls, v):
+        valid_tiers = ["Basic", "Gold", "Platinum"]
+        if v not in valid_tiers:
+            raise ValueError(f"Subscription tier must be one of {valid_tiers}")
+        return v
+
+class UpdatePartnerSubscription(BaseModel):
+    subscription_tier: Union[str, None]
+    subscription_status: Union[str, None]
+    payment_details: Union[str, None]
+    end_date: Union[datetime, None]
+
+    @field_validator("subscription_tier")
+    @classmethod
+    def validate_subscription_tier(cls, v):
+        if v is None:
+            return v
+        valid_tiers = ["Basic", "Gold", "Platinum"]
+        if v not in valid_tiers:
+            raise ValueError(f"Subscription tier must be one of {valid_tiers}")
+        return v
+
+    @field_validator("subscription_status")
+    @classmethod
+    def validate_subscription_status(cls, v):
+        if v is None:
+            return v
+        valid_statuses = ["active", "inactive", "pending", "expired"]
+        if v not in valid_statuses:
+            raise ValueError(f"Subscription status must be one of {valid_statuses}")
+        return v
+
+class AddPartnerContribution(BaseModel):
+    mother_id: str
+    partner_id: str
+    month_key: str
+    amount: float
+
+    @field_validator("mother_id", "partner_id")
+    @classmethod
+    def validate_id(cls, v):
+        if len(v) > 50:
+            raise ValueError("ID must be 50 characters or less")
+        return v
+
+    @field_validator("month_key")
+    @classmethod
+    def validate_month_key(cls, v):
+        if not re.match(r"^\d{4}-[0-1][0-9]$", v):
+            raise ValueError("Invalid month_key format. Expected YYYY-MM")
+        return v
+
+    @field_validator("amount")
+    @classmethod
+    def validate_amount(cls, v):
+        if v < 0:
+            raise ValueError("Amount must be non-negative")
+        return v
+
 class AddDonor(BaseModel):
     first_name: str
     surname: str
@@ -151,91 +224,6 @@ class UpdateDonor(BaseModel):
             raise ValueError("Country of residence must be 100 characters or less")
         return v.strip()
 
-class AddBusiness(BaseModel):
-    business_name: str
-    contact_email: str
-    country_of_residence: Union[str, None]
-    payment_details: Union[str, None]
-    subscription_status: str = "pending"
-
-    @field_validator("business_name")
-    @classmethod
-    def validate_business_name(cls, v):
-        if not v or len(v.strip()) == 0:
-            raise ValueError("Business name cannot be empty")
-        if len(v) > 100:
-            raise ValueError("Business name must be 100 characters or less")
-        return v.strip()
-
-    @field_validator("contact_email")
-    @classmethod
-    def validate_email(cls, v):
-        if len(v) > 255 or not v or "@" not in v or "." not in v:
-            raise ValueError("Invalid email format")
-        return v.strip()
-
-    @field_validator("country_of_residence")
-    @classmethod
-    def validate_country(cls, v):
-        if v is None:
-            return v
-        if len(v) > 100:
-            raise ValueError("Country of residence must be 100 characters or less")
-        return v.strip()
-
-    @field_validator("subscription_status")
-    @classmethod
-    def validate_subscription_status(cls, v):
-        valid_statuses = ["active", "inactive", "pending"]
-        if v not in valid_statuses:
-            raise ValueError(f"Subscription status must be one of {valid_statuses}")
-        return v
-
-class UpdateBusiness(BaseModel):
-    business_name: Union[str, None]
-    contact_email: Union[str, None]
-    country_of_residence: Union[str, None]
-    payment_details: Union[str, None]
-    subscription_status: Union[str, None]
-
-    @field_validator("business_name")
-    @classmethod
-    def validate_business_name(cls, v):
-        if v is None:
-            return v
-        if len(v.strip()) == 0:
-            raise ValueError("Business name cannot be empty")
-        if len(v) > 100:
-            raise ValueError("Business name must be 100 characters or less")
-        return v.strip()
-
-    @field_validator("contact_email")
-    @classmethod
-    def validate_email(cls, v):
-        if v is None:
-            return v
-        if len(v) > 255 or not v or "@" not in v or "." not in v:
-            raise ValueError("Invalid email format")
-        return v.strip()
-
-    @field_validator("country_of_residence")
-    @classmethod
-    def validate_country(cls, v):
-        if v is None:
-            return v
-        if len(v) > 100:
-            raise ValueError("Country of residence must be 100 characters or less")
-        return v.strip()
-
-    @field_validator("subscription_status")
-    @classmethod
-    def validate_subscription_status(cls, v):
-        if v is None:
-            return v
-        valid_statuses = ["active", "inactive", "pending"]
-        if v not in valid_statuses:
-            raise ValueError(f"Subscription status must be one of {valid_statuses}")
-        return v
 
 class AddDonation(BaseModel):
     mother_id: str
@@ -406,17 +394,17 @@ async def add_partner(partner_data: AddPartner, db: Session = Depends(get_db)):
 
 @app.get("/partners")
 async def get_partners(db: Session = Depends(get_db)):
-    """Retrieve all partners with their activities and number of associated mothers."""
+    """Retrieve all partners with their activities, subscriptions, and number of associated mothers."""
     try:
         partners = db.query(Partners).all()
         if not partners:
             return {"message": "No partners found"}
         result = []
         for p in partners:
-            # Fetch activities for the partner
+            subscription = db.query(PartnerSubscriptions).filter(PartnerSubscriptions.partner_id == p.partner_id).first()
             activities = db.query(MotherActivity).filter(MotherActivity.partner_id == p.partner_id).all()
-            # Count mothers associated with the partner
             mother_count = db.query(Mother).filter(Mother.partner_id == p.partner_id).count()
+            total_contributions = sum(float(c.amount) for c in db.query(PartnerContributions).filter(PartnerContributions.partner_id == p.partner_id).all())
             result.append({
                 "partner_id": p.partner_id,
                 "partner_name": p.partner_name,
@@ -425,6 +413,13 @@ async def get_partners(db: Session = Depends(get_db)):
                 "total_members": p.total_members,
                 "tel_number": p.tel_number,
                 "email": p.email,
+                "subscription": {
+                    "subscription_id": subscription.subscription_id,
+                    "subscription_tier": subscription.subscription_tier,
+                    "subscription_status": subscription.subscription_status,
+                    "start_date": subscription.start_date,
+                    "end_date": subscription.end_date
+                } if subscription else None,
                 "created_at": p.created_at,
                 "updated_at": p.updated_at,
                 "activities": [
@@ -435,23 +430,135 @@ async def get_partners(db: Session = Depends(get_db)):
                         "num_people": a.num_people
                     } for a in activities
                 ],
-                "mother_count": mother_count
+                "mother_count": mother_count,
+                "total_contributions": total_contributions
             })
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/partners/{partner_id}")
-async def get_partner_profile(partner_id: str, db: Session = Depends(get_db)):
-    """Retrieve a partner's profile by ID with their activities and number of associated mothers."""
+@app.post("/addPartnerSubscription")
+async def add_partner_subscription(subscription_data: AddPartnerSubscription, db: Session = Depends(get_db)):
+    """Add a new subscription for a partner."""
+    try:
+        partner = db.query(Partners).filter(Partners.partner_id == subscription_data.partner_id).first()
+        if not partner:
+            raise HTTPException(status_code=404, detail=f"Partner with ID '{subscription_data.partner_id}' not found")
+        if db.query(PartnerSubscriptions).filter(PartnerSubscriptions.partner_id == subscription_data.partner_id).first():
+            raise HTTPException(status_code=400, detail=f"Subscription already exists for partner {subscription_data.partner_id}")
+
+        subscription_id = str(uuid.uuid4())
+        subscription = PartnerSubscriptions(
+            subscription_id=subscription_id,
+            partner_id=subscription_data.partner_id,
+            subscription_tier=subscription_data.subscription_tier,
+            subscription_status="pending",
+            payment_details=subscription_data.payment_details
+        )
+        db.add(subscription)
+        db.commit()
+        db.refresh(subscription)
+        return {"message": "Subscription added successfully", "subscription_id": subscription_id}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.put("/partnerSubscriptions/{subscription_id}")
+async def update_partner_subscription(subscription_id: str, subscription_data: UpdatePartnerSubscription, db: Session = Depends(get_db)):
+    """Update a partner's subscription details."""
+    try:
+        subscription = db.query(PartnerSubscriptions).filter(PartnerSubscriptions.subscription_id == subscription_id).first()
+        if not subscription:
+            raise HTTPException(status_code=404, detail=f"No subscription found with ID {subscription_id}")
+
+        if subscription_data.subscription_tier:
+            subscription.subscription_tier = subscription_data.subscription_tier
+        if subscription_data.subscription_status:
+            subscription.subscription_status = subscription_data.subscription_status
+        if subscription_data.payment_details is not None:
+            subscription.payment_details = subscription_data.payment_details
+        if subscription_data.end_date:
+            subscription.end_date = subscription_data.end_date
+        subscription.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(subscription)
+        return {"message": f"Subscription {subscription_id} updated successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/partnerSubscriptions/{partner_id}")
+async def get_partner_subscription(partner_id: str, db: Session = Depends(get_db)):
+    """Retrieve a partner's subscription details."""
+    try:
+        subscription = db.query(PartnerSubscriptions).filter(PartnerSubscriptions.partner_id == partner_id).first()
+        if not subscription:
+            return {"message": f"No subscription found for partner {partner_id}"}
+        return {
+            "subscription_id": subscription.subscription_id,
+            "partner_id": subscription.partner_id,
+            "subscription_tier": subscription.subscription_tier,
+            "subscription_status": subscription.subscription_status,
+            "start_date": subscription.start_date,
+            "end_date": subscription.end_date,
+            "payment_details": subscription.payment_details,
+            "created_at": subscription.created_at,
+            "updated_at": subscription.updated_at
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/addPartnerContribution")
+async def add_partner_contribution(contribution_data: AddPartnerContribution, db: Session = Depends(get_db)):
+    """Add a partner match funding contribution for a specific mother and month."""
+    try:
+        result = add_partner_contribution(db, contribution_data.mother_id, contribution_data.partner_id, contribution_data.month_key, contribution_data.amount)
+        return result
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/partners/{partner_id}/contributions")
+async def get_partner_contributions(partner_id: str, db: Session = Depends(get_db)):
+    """Retrieve all match funding contributions made by a specific partner."""
     try:
         partner = db.query(Partners).filter(Partners.partner_id == partner_id).first()
         if not partner:
             raise HTTPException(status_code=404, detail=f"No partner found with ID {partner_id}")
-        # Fetch activities for the partner
+        contributions = db.query(PartnerContributions).filter(PartnerContributions.partner_id == partner_id).all()
+        if not contributions:
+            return {"message": f"No contributions found for partner {partner_id}"}
+        return [
+            {
+                "id": c.id,
+                "mother_id": c.mother_id,
+                "month_key": c.month_key,
+                "amount": float(c.amount),
+                "created_at": c.created_at,
+                "updated_at": c.updated_at
+            }
+            for c in contributions
+        ]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/partners/{partner_id}")
+async def get_partner_profile(partner_id: str, db: Session = Depends(get_db)):
+    """Retrieve a partner's profile by ID with their activities, subscription, and number of associated mothers."""
+    try:
+        partner = db.query(Partners).filter(Partners.partner_id == partner_id).first()
+        if not partner:
+            raise HTTPException(status_code=404, detail=f"No partner found with ID {partner_id}")
+        subscription = db.query(PartnerSubscriptions).filter(PartnerSubscriptions.partner_id == partner_id).first()
         activities = db.query(MotherActivity).filter(MotherActivity.partner_id == partner_id).all()
-        # Count mothers associated with the partner
         mother_count = db.query(Mother).filter(Mother.partner_id == partner_id).count()
+        total_contributions = sum(float(c.amount) for c in db.query(PartnerContributions).filter(PartnerContributions.partner_id == partner_id).all())
         return {
             "partner_id": partner.partner_id,
             "partner_name": partner.partner_name,
@@ -460,6 +567,13 @@ async def get_partner_profile(partner_id: str, db: Session = Depends(get_db)):
             "total_members": partner.total_members,
             "tel_number": partner.tel_number,
             "email": partner.email,
+            "subscription": {
+                "subscription_id": subscription.subscription_id,
+                "subscription_tier": subscription.subscription_tier,
+                "subscription_status": subscription.subscription_status,
+                "start_date": subscription.start_date,
+                "end_date": subscription.end_date
+            } if subscription else None,
             "created_at": partner.created_at,
             "updated_at": partner.updated_at,
             "activities": [
@@ -470,7 +584,8 @@ async def get_partner_profile(partner_id: str, db: Session = Depends(get_db)):
                     "num_people": a.num_people
                 } for a in activities
             ],
-            "mother_count": mother_count
+            "mother_count": mother_count,
+            "total_contributions": total_contributions
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

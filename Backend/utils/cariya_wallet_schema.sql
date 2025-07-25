@@ -19,6 +19,33 @@ CREATE TABLE partners (
     CONSTRAINT unique_email UNIQUE (email)
 );
 
+-- Creating the partner_subscriptions table to track partner subscriptions
+CREATE TABLE partner_subscriptions (
+    subscription_id VARCHAR(50) PRIMARY KEY,
+    partner_id VARCHAR(50) NOT NULL REFERENCES partners(partner_id) ON DELETE CASCADE,
+    subscription_tier VARCHAR(20) NOT NULL DEFAULT 'Basic' CHECK (subscription_tier IN ('Basic', 'Gold', 'Platinum')),
+    subscription_status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (subscription_status IN ('active', 'inactive', 'pending', 'expired')),
+    start_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    end_date TIMESTAMP,
+    payment_details TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_partner_subscription UNIQUE (partner_id)
+);
+
+-- Creating the partner_contributions table to track match funding contributions
+CREATE TABLE partner_contributions (
+    id SERIAL PRIMARY KEY,
+    partner_id VARCHAR(50) NOT NULL REFERENCES partners(partner_id) ON DELETE CASCADE,
+    mother_id VARCHAR(50) NOT NULL REFERENCES mothers(generated_id) ON DELETE CASCADE,
+    month_key CHAR(7) NOT NULL CHECK (month_key ~ '^[0-9]{4}-[0-1][0-9]$'),
+    amount DECIMAL(15, 2) NOT NULL DEFAULT 0.0 CHECK (amount >= 0),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_partner_mother_month UNIQUE (partner_id, mother_id, month_key)
+);
+
+
 -- Creating the donors table to store donor information
 CREATE TABLE donors (
     donor_id VARCHAR(50) PRIMARY KEY,
@@ -33,20 +60,7 @@ CREATE TABLE donors (
     CONSTRAINT unique_donor_email UNIQUE (email)
 );
 
--- Creating the businesses table to store business registration information
-CREATE TABLE businesses (
-    business_id VARCHAR(50) PRIMARY KEY,
-    business_name VARCHAR(100) NOT NULL,
-    contact_email VARCHAR(255) NOT NULL CHECK (contact_email ~ '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'),
-    country_of_residence VARCHAR(100),
-    payment_details TEXT,
-    subscription_status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (subscription_status IN ('active', 'inactive', 'pending')),
-    total_contributions DECIMAL(15, 2) NOT NULL DEFAULT 0.0 CHECK (total_contributions >= 0),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT unique_business_name UNIQUE (business_name),
-    CONSTRAINT unique_business_email UNIQUE (contact_email)
-);
+
 
 -- Creating the mother_activities table to store activity information, owned by partners
 CREATE TABLE mother_activities (
@@ -101,6 +115,7 @@ CREATE TABLE monthly_savings (
     savings DECIMAL(15, 2) NOT NULL DEFAULT 0.0 CHECK (savings >= 0),
     milestone_score INTEGER NOT NULL DEFAULT 0 CHECK (milestone_score IN (0, 1)),
     donor_contribution DECIMAL(15, 2) NOT NULL DEFAULT 0.0 CHECK (donor_contribution >= 0),
+    partner_contribution DECIMAL(15, 2) NOT NULL DEFAULT 0.0 CHECK (partner_contribution >= 0),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT unique_mother_month UNIQUE (mother_id, month_key)
@@ -135,8 +150,11 @@ CREATE TABLE donor_contributions (
 
 -- Creating indexes for faster queries
 CREATE INDEX idx_partners_location ON partners (location);
+CREATE INDEX idx_partner_subscriptions_partner_id ON partner_subscriptions (partner_id);
+CREATE INDEX idx_partner_contributions_partner_id ON partner_contributions (partner_id);
+CREATE INDEX idx_partner_contributions_mother_id ON partner_contributions (mother_id);
+CREATE INDEX idx_partner_contributions_month_key ON partner_contributions (month_key);
 CREATE INDEX idx_donors_country ON donors (country_of_residence);
-CREATE INDEX idx_businesses_country ON businesses (country_of_residence);
 CREATE INDEX idx_mother_activities_partner_id ON mother_activities (partner_id);
 CREATE INDEX idx_mothers_partner_id ON mothers (partner_id);
 CREATE INDEX idx_mothers_location ON mothers (location);
@@ -167,15 +185,21 @@ CREATE TRIGGER update_partners_timestamp
     FOR EACH ROW
     EXECUTE FUNCTION update_timestamp();
 
+CREATE TRIGGER update_partner_subscriptions_timestamp
+    BEFORE UPDATE ON partner_subscriptions
+    FOR EACH ROW
+    EXECUTE FUNCTION update_timestamp();
+
+CREATE TRIGGER update_partner_contributions_timestamp
+    BEFORE UPDATE ON partner_contributions
+    FOR EACH ROW
+    EXECUTE FUNCTION update_timestamp();
+
 CREATE TRIGGER update_donors_timestamp
     BEFORE UPDATE ON donors
     FOR EACH ROW
     EXECUTE FUNCTION update_timestamp();
 
-CREATE TRIGGER update_businesses_timestamp
-    BEFORE UPDATE ON businesses
-    FOR EACH ROW
-    EXECUTE FUNCTION update_timestamp();
 
 CREATE TRIGGER update_mother_activities_timestamp
     BEFORE UPDATE ON mother_activities
