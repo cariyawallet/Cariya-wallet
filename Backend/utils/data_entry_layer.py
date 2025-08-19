@@ -13,7 +13,7 @@ from models import Mother, MotherActivity, MotherPartnerActivity, MonthlyActivit
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = "postgresql://cariyadb_user:hOZPY44VmR4vQv8P9OFzwCOHdShXrGBv@dpg-d1972anfte5s73c2rao0-a.oregon-postgres.render.com/cariyadb"
+DATABASE_URL = "postgresql://cariyadb_damb_user:LLM87f54JeWhIfyHBDSKJogoPqc93jrW@dpg-d28s0druibrs73dt691g-a.oregon-postgres.render.com/cariyadb_damb"
 
 # Database connection
 engine = create_engine(DATABASE_URL)
@@ -359,21 +359,21 @@ def import_excel_data(file_path: str, partner_id: str, activity_id: str, db: Ses
         #     print("AddActivity columns:", list(df_activity.columns))
         #     results['add_activity'] = process_add_activity_sheet(df_activity, partner_id, db)
 
-        # Process Profiles sheet
-        if 'Profiles' in xls.sheet_names:
-            df_profiles = pd.read_excel(xls, 'Profiles')
-            results['profiles'] = process_profiles_sheet(df_profiles, partner_id, activity_id, db)
+        # # Process Profiles sheet
+        # if 'Profiles' in xls.sheet_names:
+        #     df_profiles = pd.read_excel(xls, 'Profiles')
+        #     results['profiles'] = process_profiles_sheet(df_profiles, partner_id, activity_id, db)
 
-        # # Process Activity compliance sheet
-        # if 'Activity compliance' in xls.sheet_names:
-        #     df_compliance = pd.read_excel(xls, 'Activity compliance')
-        #     results['activity_compliance'] = process_activity_compliance_sheet(df_compliance, db)
+        # Process Activity compliance sheet
+        if 'Activity compliance' in xls.sheet_names:
+            df_compliance = pd.read_excel(xls, 'Activity compliance')
+            results['activity_compliance'] = process_activity_compliance_sheet(df_compliance, db)
 
-        # logger.info("Excel import completed successfully")
-        # return {
-        #     "message": "Excel data imported successfully",
-        #     "details": results
-        # }
+        logger.info("Excel import completed successfully")
+        return {
+            "message": "Excel data imported successfully",
+            "details": results
+        }
 
     except ValueError as e:
         logger.error(f"Excel import failed: {str(e)}")
@@ -386,8 +386,8 @@ def import_excel_data(file_path: str, partner_id: str, activity_id: str, db: Ses
 if __name__ == "__main__":
     # Example usage
     file_path = "/Users/user/Documents/CARIYA/cariya_wallet/Backend/utils/data/Okere City Mothers.xlsx"
-    partner_id = "aa79a4b5-7cae-4f43-9523-b20b5084b0ff"  # Replace with actual partner_id
-    activity_id = "6a232ada-06bb-4ed9-b334-fada4b6c0886"  # Replace with actual activity_id
+    partner_id = "ca2c7c25-bfbd-4138-b579-0197e914aa4b" 
+    activity_id = "fa461116-791a-4fc7-830a-b741711035ba" 
     db_session = next(get_db())
     result = import_excel_data(file_path, partner_id, activity_id, db_session)
     print(result)

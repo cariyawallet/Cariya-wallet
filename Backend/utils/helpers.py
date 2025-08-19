@@ -3,7 +3,7 @@ import logging
 import re
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from models import Mother, MonthlyActivityModel, MonthlySavings, Donors, DonorContributions, Partners, PartnerSubscriptions, PartnerContributions
+from utils.models import Mother, MonthlyActivityModel, MonthlySavings, Donors, DonorContributions, Partners, PartnerSubscriptions, PartnerContributions
 from fastapi import HTTPException
 import uuid
 
@@ -24,14 +24,16 @@ def update_activity_points(db: Session, mother_id: str, current_month: int) -> i
         raise ValueError(f"No mother found with generated_id {mother_id}")
     
     current_year = datetime.now().year
+    
+    # More efficient query to get all activity months at once
+    activity_months = db.query(MonthlyActivityModel.month_key).filter(
+        MonthlyActivityModel.mother_id == mother_id
+    ).distinct().all()
+    
     activity_points = 0
     for month in range(1, current_month + 1):
         month_key = f"{current_year}-{month:02d}"
-        activity_count = db.query(MonthlyActivityModel).filter(
-            MonthlyActivityModel.mother_id == mother_id,
-            MonthlyActivityModel.month_key == month_key
-        ).count()
-        if activity_count > 0:
+        if any(am[0] == month_key for am in activity_months):
             activity_points += 1
     
     mother.activity_points = activity_points
@@ -47,20 +49,25 @@ def update_compliance_score(db: Session, mother_id: str, current_month: int) -> 
         raise ValueError(f"No mother found with generated_id {mother_id}")
     
     current_year = datetime.now().year
-    annual_compliance = 0
     
+    # More efficient query to get all savings and activities at once
+    savings_data = db.query(MonthlySavings.month_key, MonthlySavings.milestone_score).filter(
+        MonthlySavings.mother_id == mother_id
+    ).all()
+    activity_data = db.query(MonthlyActivityModel.month_key).filter(
+        MonthlyActivityModel.mother_id == mother_id
+    ).distinct().all()
+    
+    # Convert to sets for faster lookup
+    savings_months = {s[0] for s in savings_data}
+    activity_months = {a[0] for a in activity_data}
+    savings_scores = {s[0]: s[1] for s in savings_data}
+    
+    annual_compliance = 0
     for month in range(1, current_month + 1):
         month_key = f"{current_year}-{month:02d}"
-        savings = db.query(MonthlySavings).filter(
-            MonthlySavings.mother_id == mother_id,
-            MonthlySavings.month_key == month_key
-        ).first()
-        activity = db.query(MonthlyActivityModel).filter(
-            MonthlyActivityModel.mother_id == mother_id,
-            MonthlyActivityModel.month_key == month_key
-        ).first()
-        milestone_score = savings.milestone_score if savings else 0
-        activity_point = 1 if activity else 0
+        milestone_score = savings_scores.get(month_key, 0)
+        activity_point = 1 if month_key in activity_months else 0
         annual_compliance += milestone_score + activity_point
     
     mother.compliance_score = annual_compliance
@@ -228,52 +235,69 @@ def calculate_monthly_scores(db: Session, target_month: int = None) -> dict:
         month_key = f"{current_year}-{target_month:02d}"
         logger.info(f"Calculating scores for month: {month_key}")
 
-        mothers = db.query(Mother).all()
-        if not mothers:
-            return {"message": "No mothers found to process"}
+        # Get all mothers in batches to reduce memory usage
+        batch_size = 50
+        offset = 0
+        total_processed = 0
+        
+        while True:
+            mothers = db.query(Mother).offset(offset).limit(batch_size).all()
+            if not mothers:
+                break
+                
+            logger.info(f"Processing batch of {len(mothers)} mothers (offset: {offset})")
+            
+            for mother in mothers:
+                mother_id = mother.generated_id
 
-        for mother in mothers:
-            mother_id = mother.generated_id
+                # Calculate milestone score
+                expected_savings = calculate_expected_savings(mother.num_children)
+                savings = db.query(MonthlySavings).filter(
+                    MonthlySavings.mother_id == mother_id,
+                    MonthlySavings.month_key == month_key
+                ).first()
+                
+                if savings:
+                    monthly_savings = float(savings.savings)
+                    milestone_score = 1 if monthly_savings >= expected_savings else 0
+                else:
+                    monthly_savings = 0
+                    milestone_score = 0
 
-            # Calculate milestone score
-            expected_savings = calculate_expected_savings(mother.num_children)
-            savings = db.query(MonthlySavings).filter(
-                MonthlySavings.mother_id == mother_id,
-                MonthlySavings.month_key == month_key
-            ).first()
-            if savings:
-                monthly_savings = float(savings.savings)
-                milestone_score = 1 if monthly_savings >= expected_savings else 0
-            else:
-                monthly_savings = 0
-                milestone_score = 0
+                # Update or create monthly_savings
+                if savings:
+                    savings.milestone_score = milestone_score
+                    savings.updated_at = datetime.utcnow()
+                else:
+                    savings = MonthlySavings(
+                        mother_id=mother_id,
+                        month_key=month_key,
+                        savings=monthly_savings,
+                        milestone_score=milestone_score,
+                        donor_contribution=0.0,
+                        partner_contribution=0.0
+                    )
+                    db.add(savings)
+                
+                # Update activity points and compliance score in smaller transactions
+                try:
+                    activity_points = update_activity_points(db, mother_id, current_month)
+                    compliance_score = update_compliance_score(db, mother_id, current_month)
+                    
+                    logger.info(f"Updated scores for mother {mother_id}: Milestone={milestone_score}, Activity Points={activity_points}, Compliance={compliance_score}")
+                except Exception as e:
+                    logger.error(f"Error updating scores for mother {mother_id}: {str(e)}")
+                    continue
+            
+            # Commit batch to reduce transaction size
+            db.commit()
+            total_processed += len(mothers)
+            offset += batch_size
+            
+            logger.info(f"Processed {total_processed} mothers so far")
 
-            # Update or create monthly_savings
-            if savings:
-                savings.milestone_score = milestone_score
-                savings.updated_at = datetime.utcnow()
-            else:
-                savings = MonthlySavings(
-                    mother_id=mother_id,
-                    month_key=month_key,
-                    savings=monthly_savings,
-                    milestone_score=milestone_score,
-                    donor_contribution=0.0,
-                    partner_contribution=0.0
-                )
-                db.add(savings)
-            db.flush()
-
-            # Update activity points
-            activity_points = update_activity_points(db, mother_id, current_month)
-
-            # Update compliance score
-            compliance_score = update_compliance_score(db, mother_id, current_month)
-
-            logger.info(f"Updated scores for mother {mother_id}: Milestone={milestone_score}, Activity Points={activity_points}, Compliance={compliance_score}")
-
-        db.commit()
-        return {"message": f"Scores calculated for month {month_key}"}
+        logger.info(f"Completed scoring calculation for month {month_key}. Total mothers processed: {total_processed}")
+        return {"message": f"Scores calculated for month {month_key}. Total mothers processed: {total_processed}"}
     except Exception as e:
         db.rollback()
         logger.error(f"Error calculating monthly scores: {str(e)}")

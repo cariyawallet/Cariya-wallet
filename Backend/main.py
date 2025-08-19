@@ -1,26 +1,44 @@
 import os
 import uuid
 import re
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from typing import Union, List
+from typing import Union, List,Optional
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime,timedelta,timezone
+import hashlib
+import string
+import random
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from utils.unique_identifier_funcs import normalize_mobile_number, parse_children_ages, generate_unique_identifier
-from utils.helpers import calculate_expected_savings, update_activity_points, update_compliance_score, calculate_monthly_scores, add_donor_contribution, segment_mothers_and_analyze_trends
+from utils.helpers import calculate_expected_savings,update_compliance_score, calculate_monthly_scores, add_donor_contribution, add_partner_contribution
+from utils.async_helpers import calculate_monthly_scores_async, get_scoring_progress
 from utils.models import Mother, MotherActivity, MotherPartnerActivity, MonthlySavings, MonthlyActivityModel, Partners, Donors,DonorContributions,PartnerSubscriptions, PartnerContributions,Base
+from utils.verification import generate_verification_code, store_verification_code, validate_verification_code, generate_token, send_verification_email
 
-DATABASE_URL = "postgresql://cariyadb_user:hOZPY44VmR4vQv8P9OFzwCOHdShXrGBv@dpg-d1972anfte5s73c2rao0-a.oregon-postgres.render.com/cariyadb"
+DATABASE_URL = "postgresql://cariyadb_damb_user:LLM87f54JeWhIfyHBDSKJogoPqc93jrW@dpg-d28s0druibrs73dt691g-a.oregon-postgres.render.com/cariyadb_damb"
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL not set in environment variables")
 
-# Database connection
-engine = create_engine(DATABASE_URL)
+# Database connection with proper pool configuration
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=20,  # Increased pool size for better concurrency
+    max_overflow=30,  # Allow additional connections when pool is full
+    pool_pre_ping=True,  # Validate connections before use
+    pool_recycle=3600,  # Recycle connections every hour
+    pool_timeout=30,  # Timeout for getting connection from pool
+    echo=False  # Set to True for SQL debugging
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Cariya Wallet API")
 app.add_middleware(
@@ -30,6 +48,35 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Thread pool for background tasks
+executor = ThreadPoolExecutor(max_workers=4)
+
+# Global flag to track scoring job status
+scoring_job_running = False
+scoring_job_lock = threading.Lock()
+
+verification_codes = {}
+partners = [
+    {
+        "partner_id": "1",
+        "partner_name": "Sample Partner",
+        "email": "partner@example.com",
+        "phone_number": "+1234567890",
+        "mother_count": 10,
+        "total_contributions": 100000,
+        "activities": []
+    }
+]
+
+class PartnerLoginRequest(BaseModel):
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
+
+class VerifyCodeRequest(BaseModel):
+    method: str
+    identifier: str
+    code: str
 
 # Pydantic models
 class AddPartner(BaseModel):
@@ -344,24 +391,96 @@ def get_db():
     finally:
         db.close()
 
-# Scheduler setup
-scheduler = BackgroundScheduler()
+# Scheduler setup - using AsyncIOScheduler for better integration
+scheduler = AsyncIOScheduler()
+
+async def run_scoring_job_async():
+    """Run the scoring job asynchronously to prevent blocking."""
+    global scoring_job_running
+    
+    with scoring_job_lock:
+        if scoring_job_running:
+            print("Scoring job already running, skipping...")
+            return
+        scoring_job_running = True
+    
+    try:
+        # Run the scoring job in a thread pool to avoid blocking
+        loop = asyncio.get_event_loop()
+        current_month = datetime.now().month
+        
+        def scoring_worker():
+            """Worker function to run scoring in separate thread."""
+            db = SessionLocal()
+            try:
+                calculate_monthly_scores(db, target_month=current_month)
+                print(f"Scoring job executed successfully for month {current_month}")
+                return True
+            except Exception as e:
+                print(f"Error running scoring job: {str(e)}")
+                return False
+            finally:
+                db.close()
+        
+        # Execute in thread pool
+        result = await loop.run_in_executor(executor, scoring_worker)
+        if result:
+            print(f"Scoring job completed successfully for month {current_month}")
+        else:
+            print(f"Scoring job failed for month {current_month}")
+            
+    except Exception as e:
+        print(f"Error in async scoring job: {str(e)}")
+    finally:
+        with scoring_job_lock:
+            scoring_job_running = False
 
 def run_scoring_job():
-    """Run the scoring job every 30 minutes."""
-    db = SessionLocal()
-    try:
-        current_month = datetime.now().month
-        calculate_monthly_scores(db, target_month=current_month)
-        print(f"Scoring job executed successfully for month {current_month}")
-    except Exception as e:
-        print(f"Error running scoring job: {str(e)}")
-    finally:
-        db.close()
+    """Synchronous wrapper for the async scoring job."""
+    asyncio.create_task(run_scoring_job_async())
 
 # Schedule the scoring job to run every 30 minutes
 scheduler.add_job(run_scoring_job, "interval", minutes=30)
 scheduler.start()
+
+
+@app.post("/partner/login")
+async def partner_login(request: PartnerLoginRequest, db: Session = Depends(get_db)):
+    if not request.email and not request.phone_number:
+        raise HTTPException(status_code=400, detail="Email or phone number is required")
+    
+    identifier = request.email or request.phone_number
+    partner = db.query(Partners).filter(
+        (Partners.email == request.email) | (Partners.tel_number == request.phone_number)
+    ).first()
+    
+    if not partner:
+        raise HTTPException(status_code=404, detail="Partner not found")
+    
+    code = generate_verification_code()
+    store_verification_code(identifier, code)
+    print(f"Generated verification code {code} for {identifier}")  # For testing
+    
+    return {
+        "message": "Verification code generated",
+        "partner_id": partner.partner_id,
+        "partner_name": partner.partner_name
+    }
+@app.post("/partner/verify")
+async def verify_partner(request: VerifyCodeRequest):
+    if request.method not in ["email", "phone"]:
+        raise HTTPException(status_code=400, detail="Invalid method")
+    
+    if not validate_verification_code(request.identifier, request.code):
+        raise HTTPException(status_code=401, detail="Invalid or expired code")
+    
+    partner = next((p for p in partners if p["email"] == request.identifier or p["phone_number"] == request.identifier), None)
+    if not partner:
+        raise HTTPException(status_code=404, detail="Partner not found")
+    
+    token = generate_token(partner["partner_id"])
+    return {"partner_id": partner["partner_id"], "token": token}
+
 
 @app.post("/addPartner")
 async def add_partner(partner_data: AddPartner, db: Session = Depends(get_db)):
@@ -1042,6 +1161,97 @@ async def get_mothers(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+@app.get("/partners/{partner_id}/mothers")
+async def get_mothers_by_partner(partner_id: str, db: Session = Depends(get_db)):
+    """Retrieve all mothers associated with a specific partner."""
+    try:
+        # First check if the partner exists
+        partner = db.query(Partners).filter(Partners.partner_id == partner_id).first()
+        if not partner:
+            raise HTTPException(status_code=404, detail=f"No partner found with ID {partner_id}")
+        
+        # Get all mothers for this partner
+        mothers = db.query(Mother).filter(Mother.partner_id == partner_id).all()
+        if not mothers:
+            return {"message": f"No mothers found for partner {partner_id}", "partner_name": partner.partner_name, "mothers": []}
+        
+        result = []
+        for mother in mothers:
+            # Fetch activities for the mother
+            mother_activities = db.query(MotherPartnerActivity).filter(MotherPartnerActivity.mother_id == mother.generated_id).all()
+            activities = []
+            for ma in mother_activities:
+                activity = db.query(MotherActivity).filter(MotherActivity.activity_id == ma.activity_id).first()
+                if activity:
+                    activities.append({
+                        "activity_id": activity.activity_id,
+                        "name": activity.name,
+                        "description": activity.description,
+                        "num_people": activity.num_people,
+                        "created_at": activity.created_at
+                    })
+            
+            # Fetch monthly savings sum
+            monthly_savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother.generated_id).all()
+            total_monthly_savings = sum(float(saving.savings) for saving in monthly_savings)
+            
+            # Fetch compliance score
+            current_month = min(datetime.now().month, 4)
+            max_compliance = current_month * 2
+            compliance_score = f"{mother.compliance_score}/{max_compliance}"
+            
+            # Fetch donor profile if exists
+            donor_profile = None
+            if mother.donor_id:
+                donor = db.query(Donors).filter(Donors.donor_id == mother.donor_id).first()
+                if donor:
+                    donor_profile = {
+                        "donor_id": donor.donor_id,
+                        "first_name": donor.first_name,
+                        "surname": donor.surname,
+                        "email": donor.email,
+                        "country_of_residence": donor.country_of_residence,
+                        "preferred_activities": donor.preferred_activities,
+                        "total_contributions": float(donor.total_contributions),
+                        "created_at": donor.created_at,
+                        "updated_at": donor.updated_at
+                    }
+            
+            result.append({
+                "generated_id": mother.generated_id,
+                "first_name": mother.first_name,
+                "surname": mother.surname,
+                "mobile_number": mother.mobile_number,
+                "num_children": mother.num_children,
+                "ages_of_children": mother.ages_of_children,
+                "activity_points": mother.activity_points,
+                "savings": float(mother.savings),
+                "milestone_score": mother.milestone_score,
+                "compliance_score": compliance_score,
+                "donor_contributions": float(mother.donor_contributions),
+                "partner_id": mother.partner_id,
+                "donor_id": mother.donor_id,
+                "location": mother.location,
+                "education_level": mother.education_level,
+                "nin": mother.nin,
+                "created_at": mother.created_at,
+                "updated_at": mother.updated_at,
+                "activities": activities,
+                "total_monthly_savings": total_monthly_savings,
+                "donor_profile": donor_profile
+            })
+        
+        return {
+            "partner_id": partner_id,
+            "partner_name": partner.partner_name,
+            "mother_count": len(result),
+            "mothers": result
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 @app.get("/mothers/{mother_id}")
 async def get_mother_info(mother_id: str, db: Session = Depends(get_db)):
     """Retrieve mother information with activities, compliance results, sum of monthly savings, and donor profile."""
@@ -1271,6 +1481,52 @@ async def donor_view(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+@app.post("/admin/trigger-scoring")
+async def trigger_scoring_job(background_tasks: BackgroundTasks):
+    """Manually trigger the scoring job."""
+    try:
+        with scoring_job_lock:
+            if scoring_job_running:
+                return {"message": "Scoring job already running", "status": "running"}
+        
+        # Add to background tasks to prevent blocking
+        background_tasks.add_task(run_scoring_job_async)
+        return {"message": "Scoring job triggered successfully", "status": "triggered"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error triggering scoring job: {str(e)}")
+
+@app.get("/admin/scoring-status")
+async def get_scoring_status():
+    """Get the current status of the scoring job."""
+    return {
+        "scoring_job_running": scoring_job_running,
+        "scheduler_running": scheduler.running,
+        "next_run_time": scheduler.get_jobs()[0].next_run_time if scheduler.get_jobs() else None
+    }
+
+@app.post("/admin/trigger-async-scoring")
+async def trigger_async_scoring_job(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Manually trigger the async scoring job for better performance."""
+    try:
+        with scoring_job_lock:
+            if scoring_job_running:
+                return {"message": "Scoring job already running", "status": "running"}
+        
+        # Add to background tasks to prevent blocking
+        background_tasks.add_task(calculate_monthly_scores_async, db, None, executor)
+        return {"message": "Async scoring job triggered successfully", "status": "triggered"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error triggering async scoring job: {str(e)}")
+
+@app.get("/admin/scoring-progress")
+async def get_scoring_progress_endpoint(db: Session = Depends(get_db)):
+    """Get the current progress of scoring operations."""
+    try:
+        progress = await get_scoring_progress(db)
+        return progress
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting scoring progress: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     Base.metadata.create_all(bind=engine)
@@ -1280,3 +1536,4 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, SystemExit):
         print("Shutting down scheduler...")
         scheduler.shutdown()
+        executor.shutdown(wait=True)
