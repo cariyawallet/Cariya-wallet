@@ -121,6 +121,23 @@ CREATE TABLE monthly_savings (
     CONSTRAINT unique_mother_month UNIQUE (mother_id, month_key)
 );
 
+-- Creating the savings_transactions table to track individual savings transactions
+CREATE TABLE savings_transactions (
+    id SERIAL PRIMARY KEY,
+    transaction_id VARCHAR(100) NOT NULL UNIQUE,
+    mother_id VARCHAR(50) NOT NULL REFERENCES mothers(generated_id) ON DELETE CASCADE,
+    month_key CHAR(7) NOT NULL CHECK (month_key ~ '^[0-9]{4}-[0-1][0-9]$'),
+    amount DECIMAL(15, 2) NOT NULL DEFAULT 0.0 CHECK (amount >= 0),
+    phone_number VARCHAR(13) NOT NULL CHECK (phone_number ~ '^\+256[0-9]{9,10}$'),
+    payment_method VARCHAR(50) NOT NULL CHECK (payment_method IN ('Mobile Money', 'Bank Transfer', 'Cash', 'Card', 'Other')),
+    transaction_status VARCHAR(20) NOT NULL DEFAULT 'completed' CHECK (transaction_status IN ('pending', 'completed', 'failed', 'cancelled')),
+    reference_number VARCHAR(100),
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT unique_transaction_id UNIQUE (transaction_id)
+);
+
 -- Creating the monthly_activities table to store monthly activities
 CREATE TABLE monthly_activities (
     id SERIAL PRIMARY KEY,
@@ -161,6 +178,12 @@ CREATE INDEX idx_mothers_location ON mothers (location);
 CREATE INDEX idx_mothers_donor_id ON mothers (donor_id);
 CREATE INDEX idx_monthly_savings_mother_id ON monthly_savings (mother_id);
 CREATE INDEX idx_monthly_savings_month_key ON monthly_savings (month_key);
+CREATE INDEX idx_savings_transactions_mother_id ON savings_transactions (mother_id);
+CREATE INDEX idx_savings_transactions_month_key ON savings_transactions (month_key);
+CREATE INDEX idx_savings_transactions_transaction_id ON savings_transactions (transaction_id);
+CREATE INDEX idx_savings_transactions_phone_number ON savings_transactions (phone_number);
+CREATE INDEX idx_savings_transactions_payment_method ON savings_transactions (payment_method);
+CREATE INDEX idx_savings_transactions_status ON savings_transactions (transaction_status);
 CREATE INDEX idx_monthly_activities_mother_id ON monthly_activities (mother_id);
 CREATE INDEX idx_monthly_activities_month_key ON monthly_activities (month_key);
 CREATE INDEX idx_monthly_activities_activity_id ON monthly_activities (activity_id);
@@ -221,6 +244,11 @@ CREATE TRIGGER update_monthly_savings_timestamp
     FOR EACH ROW
     EXECUTE FUNCTION update_timestamp();
 
+CREATE TRIGGER update_savings_transactions_timestamp
+    BEFORE UPDATE ON savings_transactions
+    FOR EACH ROW
+    EXECUTE FUNCTION update_timestamp();
+
 CREATE TRIGGER update_monthly_activities_timestamp
     BEFORE UPDATE ON monthly_activities
     FOR EACH ROW
@@ -228,5 +256,32 @@ CREATE TRIGGER update_monthly_activities_timestamp
 
 CREATE TRIGGER update_donor_contributions_timestamp
     BEFORE UPDATE ON donor_contributions
+    FOR EACH ROW
+    EXECUTE FUNCTION update_timestamp();
+
+-- =============================================================================
+-- SAVING REMINDERS TABLE
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS saving_reminders (
+    id SERIAL PRIMARY KEY,
+    reminder_id VARCHAR(50) UNIQUE NOT NULL,
+    mother_id VARCHAR(50) NOT NULL,
+    reminder_date INTEGER NOT NULL CHECK (reminder_date >= 1 AND reminder_date <= 31),
+    reminder_time TIME DEFAULT '09:00:00',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (mother_id) REFERENCES mothers(generated_id) ON DELETE CASCADE
+);
+
+-- Index for efficient queries
+CREATE INDEX idx_saving_reminders_mother_id ON saving_reminders(mother_id);
+CREATE INDEX idx_saving_reminders_active ON saving_reminders(is_active);
+CREATE INDEX idx_saving_reminders_date ON saving_reminders(reminder_date);
+
+-- Trigger to update updated_at timestamp
+CREATE TRIGGER update_saving_reminders_timestamp
+    BEFORE UPDATE ON saving_reminders
     FOR EACH ROW
     EXECUTE FUNCTION update_timestamp();

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, time
 from sqlalchemy import (
     Column,
     String,
@@ -9,8 +9,10 @@ from sqlalchemy import (
     DateTime,
     CheckConstraint,
     Enum,
+    Boolean,
+    Time,
 )
-from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm import declarative_base, relationship
 
 # Initialize SQLAlchemy base class for model definitions
 Base = declarative_base()
@@ -99,6 +101,10 @@ class Mother(Base):
     nin = Column(String(50))
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    # Relationships
+    savings_transactions = relationship("SavingsTransaction", back_populates="mother")
+    saving_reminders = relationship("SavingReminder", back_populates="mother")
 
 class MotherActivity(Base):
     """Represents an activity offered by a partner for mothers."""
@@ -132,6 +138,27 @@ class MonthlySavings(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
+class SavingsTransaction(Base):
+    """Tracks individual savings transactions with detailed payment information."""
+    __tablename__ = "savings_transactions"
+    id = Column(Integer, primary_key=True)
+    transaction_id = Column(String(100), nullable=False, unique=True)
+    mother_id = Column(String(50), ForeignKey("mothers.generated_id", ondelete="CASCADE"), nullable=False)
+    month_key = Column(String(7), nullable=False)
+    amount = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("amount >= 0")})
+    phone_number = Column(String(13), nullable=False)
+    payment_method = Column(String(50), nullable=False)
+    transaction_status = Column(String(20), nullable=False, default="completed")
+    reference_number = Column(String(100))
+    notes = Column(String)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    # Relationship
+    mother = relationship("Mother", back_populates="savings_transactions")
+
+
+
 class MonthlyActivityModel(Base):
     """Records a mother's participation in activities for a specific month."""
     __tablename__ = "monthly_activities"
@@ -151,5 +178,17 @@ class DonorContributions(Base):
     mother_id = Column(String(50), ForeignKey("mothers.generated_id", ondelete="CASCADE"), nullable=False)
     month_key = Column(String(7), nullable=False)
     amount = Column(Numeric(15, 2), nullable=False, default=0.0, info={"check_constraint": CheckConstraint("amount >= 0")})
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+class SavingReminder(Base):
+    """Tracks saving reminders set by mothers."""
+    __tablename__ = "saving_reminders"
+    id = Column(Integer, primary_key=True)
+    reminder_id = Column(String(50), nullable=False, unique=True)
+    mother_id = Column(String(50), ForeignKey("mothers.generated_id", ondelete="CASCADE"), nullable=False)
+    reminder_date = Column(Integer, nullable=False, info={"check_constraint": CheckConstraint("reminder_date >= 1 AND reminder_date <= 31")})
+    reminder_time = Column(Time, nullable=False, default=time(9, 0))  # Default 9:00 AM
+    is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)

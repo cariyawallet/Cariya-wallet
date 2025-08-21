@@ -12,15 +12,16 @@ from datetime import datetime,timedelta,timezone
 import hashlib
 import string
 import random
+import uuid
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from utils.unique_identifier_funcs import normalize_mobile_number, parse_children_ages, generate_unique_identifier
-from utils.helpers import calculate_expected_savings,update_compliance_score, calculate_monthly_scores, add_donor_contribution, add_partner_contribution
+from utils.helpers import calculate_expected_savings,update_compliance_score, calculate_monthly_scores, add_donor_contribution, add_partner_contribution, get_mother_transaction_summary, get_payment_method_statistics, calculate_monthly_saving_streak, calculate_credit_score, get_comprehensive_savings_analytics, get_mother_total_savings_ussd, get_mother_months_saved_ussd, get_mother_latest_contributions_ussd
 from utils.async_helpers import calculate_monthly_scores_async, get_scoring_progress
-from utils.models import Mother, MotherActivity, MotherPartnerActivity, MonthlySavings, MonthlyActivityModel, Partners, Donors,DonorContributions,PartnerSubscriptions, PartnerContributions,Base
+from utils.models import Mother, MotherActivity, MotherPartnerActivity, MonthlySavings, MonthlyActivityModel, Partners, Donors,DonorContributions,PartnerSubscriptions, PartnerContributions, SavingsTransaction, SavingReminder, Base
 from utils.verification import generate_verification_code, store_verification_code, validate_verification_code, generate_token, send_verification_email
 
 DATABASE_URL = "postgresql://cariyadb_damb_user:LLM87f54JeWhIfyHBDSKJogoPqc93jrW@dpg-d28s0druibrs73dt691g-a.oregon-postgres.render.com/cariyadb_damb"
@@ -55,6 +56,12 @@ executor = ThreadPoolExecutor(max_workers=4)
 # Global flag to track scoring job status
 scoring_job_running = False
 scoring_job_lock = threading.Lock()
+
+def generate_transaction_id() -> str:
+    """Generate a unique transaction ID for savings transactions."""
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    random_suffix = str(uuid.uuid4())[:8]
+    return f"SAV{timestamp}{random_suffix}"
 
 verification_codes = {}
 partners = [
@@ -382,6 +389,20 @@ class MonthlyActivity(BaseModel):
 class SavingsEntry(BaseModel):
     amount: float
     month: Union[int, None]
+    phone_number: str
+    payment_method: str
+    reference_number: Union[str, None] = None
+    notes: Union[str, None] = None
+
+class SavingReminderRequest(BaseModel):
+    reminder_date: int
+    
+    @field_validator("reminder_date")
+    @classmethod
+    def validate_reminder_date(cls, v):
+        if v < 1 or v > 31:
+            raise ValueError("Reminder date must be between 1 and 31")
+        return v
 
 # Dependency to get DB session
 def get_db():
@@ -444,7 +465,23 @@ scheduler.add_job(run_scoring_job, "interval", minutes=30)
 scheduler.start()
 
 
-@app.post("/partner/login")
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def get_day_suffix(day: int) -> str:
+    """Get the appropriate suffix for a day number (1st, 2nd, 3rd, etc.)."""
+    if 10 <= day % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    return suffix
+
+# =============================================================================
+# PARTNER MANAGEMENT DOCKET
+# =============================================================================
+
+@app.post("/partner/login", tags=["Partner Management"])
 async def partner_login(request: PartnerLoginRequest, db: Session = Depends(get_db)):
     if not request.email and not request.phone_number:
         raise HTTPException(status_code=400, detail="Email or phone number is required")
@@ -466,7 +503,7 @@ async def partner_login(request: PartnerLoginRequest, db: Session = Depends(get_
         "partner_id": partner.partner_id,
         "partner_name": partner.partner_name
     }
-@app.post("/partner/verify")
+@app.post("/partner/verify", tags=["Partner Management"])
 async def verify_partner(request: VerifyCodeRequest):
     if request.method not in ["email", "phone"]:
         raise HTTPException(status_code=400, detail="Invalid method")
@@ -482,7 +519,7 @@ async def verify_partner(request: VerifyCodeRequest):
     return {"partner_id": partner["partner_id"], "token": token}
 
 
-@app.post("/addPartner")
+@app.post("/addPartner", tags=["Partner Management"])
 async def add_partner(partner_data: AddPartner, db: Session = Depends(get_db)):
     """Add a new partner to the partners table."""
     try:
@@ -511,7 +548,7 @@ async def add_partner(partner_data: AddPartner, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/partners")
+@app.get("/partners", tags=["Partner Management"])
 async def get_partners(db: Session = Depends(get_db)):
     """Retrieve all partners with their activities, subscriptions, and number of associated mothers."""
     try:
@@ -556,7 +593,7 @@ async def get_partners(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/addPartnerSubscription")
+@app.post("/addPartnerSubscription", tags=["Partner Management"])
 async def add_partner_subscription(subscription_data: AddPartnerSubscription, db: Session = Depends(get_db)):
     """Add a new subscription for a partner."""
     try:
@@ -584,7 +621,7 @@ async def add_partner_subscription(subscription_data: AddPartnerSubscription, db
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.put("/partnerSubscriptions/{subscription_id}")
+@app.put("/partnerSubscriptions/{subscription_id}", tags=["Partner Management"])
 async def update_partner_subscription(subscription_id: str, subscription_data: UpdatePartnerSubscription, db: Session = Depends(get_db)):
     """Update a partner's subscription details."""
     try:
@@ -610,7 +647,7 @@ async def update_partner_subscription(subscription_id: str, subscription_data: U
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/partnerSubscriptions/{partner_id}")
+@app.get("/partnerSubscriptions/{partner_id}", tags=["Partner Management"])
 async def get_partner_subscription(partner_id: str, db: Session = Depends(get_db)):
     """Retrieve a partner's subscription details."""
     try:
@@ -631,7 +668,7 @@ async def get_partner_subscription(partner_id: str, db: Session = Depends(get_db
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/addPartnerContribution")
+@app.post("/addPartnerContribution", tags=["Partner Management"])
 async def add_partner_contribution(contribution_data: AddPartnerContribution, db: Session = Depends(get_db)):
     """Add a partner match funding contribution for a specific mother and month."""
     try:
@@ -643,7 +680,7 @@ async def add_partner_contribution(contribution_data: AddPartnerContribution, db
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/partners/{partner_id}/contributions")
+@app.get("/partners/{partner_id}/contributions", tags=["Partner Management"])
 async def get_partner_contributions(partner_id: str, db: Session = Depends(get_db)):
     """Retrieve all match funding contributions made by a specific partner."""
     try:
@@ -667,7 +704,7 @@ async def get_partner_contributions(partner_id: str, db: Session = Depends(get_d
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/partners/{partner_id}")
+@app.get("/partners/{partner_id}", tags=["Partner Management"])
 async def get_partner_profile(partner_id: str, db: Session = Depends(get_db)):
     """Retrieve a partner's profile by ID with their activities, subscription, and number of associated mothers."""
     try:
@@ -709,7 +746,11 @@ async def get_partner_profile(partner_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/partners/{partner_id}/activities")
+# =============================================================================
+# ACTIVITY MANAGEMENT DOCKET
+# =============================================================================
+
+@app.get("/partners/{partner_id}/activities", tags=["Partner Management"])
 async def get_activities_by_partner(partner_id: str, db: Session = Depends(get_db)):
     """Retrieve activities associated with a specific partner."""
     try:
@@ -720,7 +761,7 @@ async def get_activities_by_partner(partner_id: str, db: Session = Depends(get_d
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/addActivity")
+@app.post("/addActivity", tags=["Activity Management"])
 async def add_activity(activity_data: AddActivity, db: Session = Depends(get_db)):
     """Add a new activity to the mother_activities table."""
     try:
@@ -751,7 +792,7 @@ async def add_activity(activity_data: AddActivity, db: Session = Depends(get_db)
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/activities")
+@app.get("/activities", tags=["Activity Management"])
 async def get_activities(db: Session = Depends(get_db)):
     """Retrieve all activities."""
     try:
@@ -762,7 +803,11 @@ async def get_activities(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/addDonor")
+# =============================================================================
+# DONOR MANAGEMENT DOCKET
+# =============================================================================
+
+@app.post("/addDonor", tags=["Donor Management"])
 async def add_donor(donor_data: AddDonor, db: Session = Depends(get_db)):
     """Add a new donor to the donors table."""
     try:
@@ -789,7 +834,7 @@ async def add_donor(donor_data: AddDonor, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/donors")
+@app.get("/donors", tags=["Donor Management"])
 async def get_donors(db: Session = Depends(get_db)):
     """Retrieve all donors with their associated mother ID, total contributions, and mother profile."""
     try:
@@ -819,10 +864,8 @@ async def get_donors(db: Session = Depends(get_db)):
                 # Fetch monthly savings sum
                 monthly_savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother.generated_id).all()
                 total_savings = sum(float(saving.savings) for saving in monthly_savings)
-                # Fetch compliance score
-                current_month = min(datetime.now().month, 4)
-                max_compliance = current_month * 2
-                compliance_score = f"{mother.compliance_score}/{max_compliance}"
+                # Fetch compliance score - always out of 24 (2 points × 12 months)
+                compliance_score = f"{mother.compliance_score}/24"
                 mother_profile = {
                     "generated_id": mother.generated_id,
                     "first_name": mother.first_name,
@@ -850,7 +893,7 @@ async def get_donors(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/donors/{donor_id}")
+@app.get("/donors/{donor_id}", tags=["Donor Management"])
 async def get_donor_profile(donor_id: str, db: Session = Depends(get_db)):
     """Retrieve a donor's profile by ID with associated mother ID, total contributions, and mother profile."""
     try:
@@ -878,10 +921,8 @@ async def get_donor_profile(donor_id: str, db: Session = Depends(get_db)):
             # Fetch monthly savings sum
             monthly_savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother.generated_id).all()
             total_savings = sum(float(saving.savings) for saving in monthly_savings)
-            # Fetch compliance score
-            current_month = min(datetime.now().month, 4)
-            max_compliance = current_month * 2
-            compliance_score = f"{mother.compliance_score}/{max_compliance}"
+            # Fetch compliance score - always out of 24 (2 points × 12 months)
+            compliance_score = f"{mother.compliance_score}/24"
             mother_profile = {
                 "generated_id": mother.generated_id,
                 "first_name": mother.first_name,
@@ -908,7 +949,7 @@ async def get_donor_profile(donor_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.put("/donors/{donor_id}")
+@app.put("/donors/{donor_id}", tags=["Donor Management"])
 async def update_donor(donor_id: str, donor_data: UpdateDonor, db: Session = Depends(get_db)):
     """Update a donor's details."""
     try:
@@ -938,7 +979,7 @@ async def update_donor(donor_id: str, donor_data: UpdateDonor, db: Session = Dep
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.delete("/donors/{donor_id}")
+@app.delete("/donors/{donor_id}", tags=["Donor Management"])
 async def delete_donor(donor_id: str, db: Session = Depends(get_db)):
     """Delete a donor if not assigned to any mother."""
     try:
@@ -956,7 +997,7 @@ async def delete_donor(donor_id: str, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/donors/{donor_id}/donations")
+@app.get("/donors/{donor_id}/donations", tags=["Donor Management"])
 async def get_donor_donations(donor_id: str, db: Session = Depends(get_db)):
     """Retrieve all donations made by a specific donor."""
     try:
@@ -980,7 +1021,7 @@ async def get_donor_donations(donor_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/addDonation")
+@app.post("/addDonation", tags=["Donor Management"])
 async def add_donation(donation_data: AddDonation, db: Session = Depends(get_db)):
     """Add a donor contribution for a specific mother and month."""
     try:
@@ -992,7 +1033,7 @@ async def add_donation(donation_data: AddDonation, db: Session = Depends(get_db)
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/mothers/{mother_id}/donations")
+@app.get("/mothers/{mother_id}/donations", tags=["Mother Management"])
 async def get_mother_donations(mother_id: str, db: Session = Depends(get_db)):
     """Retrieve all donations for a specific mother."""
     try:
@@ -1016,7 +1057,11 @@ async def get_mother_donations(mother_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/addMother")
+# =============================================================================
+# MOTHER MANAGEMENT DOCKET
+# =============================================================================
+
+@app.post("/addMother", tags=["Mother Management"])
 async def add_mother(mother_data: AddMother, db: Session = Depends(get_db)):
     """Add a new mother and link to an existing activity via mother_partner_activities."""
     try:
@@ -1089,7 +1134,7 @@ async def add_mother(mother_data: AddMother, db: Session = Depends(get_db)):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/mothers")
+@app.get("/mothers", tags=["Mother Management"])
 async def get_mothers(db: Session = Depends(get_db)):
     """Retrieve all mothers with their complete profile, activities, compliance results, sum of monthly savings, and donor profile."""
     try:
@@ -1114,10 +1159,8 @@ async def get_mothers(db: Session = Depends(get_db)):
             # Fetch monthly savings sum
             monthly_savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == m.generated_id).all()
             total_monthly_savings = sum(float(saving.savings) for saving in monthly_savings)
-            # Fetch compliance score
-            current_month = min(datetime.now().month, 4)
-            max_compliance = current_month * 2
-            compliance_score = f"{m.compliance_score}/{max_compliance}"
+            # Fetch compliance score - always out of 24 (2 points × 12 months)
+            compliance_score = f"{m.compliance_score}/24"
             # Fetch donor profile if exists
             donor_profile = None
             if m.donor_id:
@@ -1161,7 +1204,7 @@ async def get_mothers(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/partners/{partner_id}/mothers")
+@app.get("/partners/{partner_id}/mothers", tags=["Mother Management"])
 async def get_mothers_by_partner(partner_id: str, db: Session = Depends(get_db)):
     """Retrieve all mothers associated with a specific partner."""
     try:
@@ -1195,10 +1238,8 @@ async def get_mothers_by_partner(partner_id: str, db: Session = Depends(get_db))
             monthly_savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother.generated_id).all()
             total_monthly_savings = sum(float(saving.savings) for saving in monthly_savings)
             
-            # Fetch compliance score
-            current_month = min(datetime.now().month, 4)
-            max_compliance = current_month * 2
-            compliance_score = f"{mother.compliance_score}/{max_compliance}"
+            # Fetch compliance score - always out of 24 (2 points × 12 months)
+            compliance_score = f"{mother.compliance_score}/24"
             
             # Fetch donor profile if exists
             donor_profile = None
@@ -1252,7 +1293,7 @@ async def get_mothers_by_partner(partner_id: str, db: Session = Depends(get_db))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/mothers/{mother_id}")
+@app.get("/mothers/{mother_id}", tags=["Mother Management"])
 async def get_mother_info(mother_id: str, db: Session = Depends(get_db)):
     """Retrieve mother information with activities, compliance results, sum of monthly savings, and donor profile."""
     try:
@@ -1282,10 +1323,8 @@ async def get_mother_info(mother_id: str, db: Session = Depends(get_db)):
                     "created_at": activity.created_at
                 })
 
-        # Fetch compliance score
-        current_month = min(datetime.now().month, 4)
-        max_compliance = current_month * 2
-        compliance_score = f"{mother.compliance_score}/{max_compliance}"
+        # Fetch compliance score - always out of 24 (2 points × 12 months)
+        compliance_score = f"{mother.compliance_score}/24"
 
         # Fetch donor profile if exists
         donor_profile = None
@@ -1333,12 +1372,25 @@ async def get_mother_info(mother_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/mothers/{mother_id}/savings")
+# =============================================================================
+# SAVINGS & ANALYTICS DOCKET
+# =============================================================================
+
+@app.post("/mothers/{mother_id}/savings", tags=["Savings & Analytics"])
 async def add_savings(mother_id: str, savings_data: SavingsEntry, db: Session = Depends(get_db)):
-    """Add savings for a mother in the specified month."""
+    """Add savings for a mother in the specified month with transaction tracking."""
     try:
         if savings_data.amount < 0:
             raise HTTPException(status_code=400, detail="Savings amount cannot be negative")
+
+        # Validate payment method
+        valid_payment_methods = ["Mobile Money", "Bank Transfer", "Cash", "Card", "Other"]
+        if savings_data.payment_method not in valid_payment_methods:
+            raise HTTPException(status_code=400, detail=f"Invalid payment method. Must be one of: {valid_payment_methods}")
+
+        # Validate phone number format
+        if not savings_data.phone_number.startswith("+256") or len(savings_data.phone_number) != 13:
+            raise HTTPException(status_code=400, detail="Phone number must be in format +256XXXXXXXXX")
 
         mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
         if not mother:
@@ -1351,6 +1403,23 @@ async def add_savings(mother_id: str, savings_data: SavingsEntry, db: Session = 
         month_key = f"{datetime.now().year}-{current_month:02d}"
 
         amount = Decimal(str(savings_data.amount))
+        
+        # Create savings transaction record
+        transaction_id = generate_transaction_id()
+        savings_transaction = SavingsTransaction(
+            transaction_id=transaction_id,
+            mother_id=mother_id,
+            month_key=month_key,
+            amount=amount,
+            phone_number=savings_data.phone_number,
+            payment_method=savings_data.payment_method,
+            transaction_status="completed",
+            reference_number=savings_data.reference_number,
+            notes=savings_data.notes
+        )
+        db.add(savings_transaction)
+
+        # Update monthly savings
         savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother_id, MonthlySavings.month_key == month_key).first()
         if savings:
             current_savings = savings.savings
@@ -1365,22 +1434,26 @@ async def add_savings(mother_id: str, savings_data: SavingsEntry, db: Session = 
 
         if not savings.id:
             db.add(savings)
-        db.commit()
 
+        # Update mother's total savings
         mother.savings += amount
-        db.commit()
 
-        compliance_score = update_compliance_score(db, mother_id, current_month)
+        # Update compliance score
+        compliance_score = update_compliance_score(db, mother_id)
         mother.compliance_score = compliance_score
+
         db.commit()
 
         return {
             "message": f"Savings added for {mother.first_name} {mother.surname} in {month_key}",
+            "transaction_id": transaction_id,
             "monthly_savings": float(new_savings),
             "total_savings": float(mother.savings),
             "expected_savings": float(expected_savings),
             "milestone_score": milestone_score,
-            "compliance_score": f"{compliance_score}/{current_month * 2}"
+            "compliance_score": f"{compliance_score}/24",
+            "payment_method": savings_data.payment_method,
+            "phone_number": savings_data.phone_number
         }
     except HTTPException as e:
         raise e
@@ -1388,18 +1461,49 @@ async def add_savings(mother_id: str, savings_data: SavingsEntry, db: Session = 
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/mothers/{mother_id}/monthly-savings")
+@app.get("/mothers/{mother_id}/monthly-savings", tags=["Savings & Analytics"])
 async def get_monthly_savings(mother_id: str, db: Session = Depends(get_db)):
-    """Retrieve monthly savings for a specific mother."""
+    """Retrieve monthly savings for a specific mother with enhanced analytics."""
     try:
         savings = db.query(MonthlySavings).filter(MonthlySavings.mother_id == mother_id).all()
         if not savings:
             return {"message": f"No savings found for mother with ID {mother_id}"}
-        return [{"month_key": s.month_key, "savings": float(s.savings), "milestone_score": s.milestone_score, "donor_contribution": float(s.donor_contribution)} for s in savings]
+        
+        # Calculate totals and analytics
+        total_savings = sum(float(s.savings) for s in savings)
+        total_milestone_score = sum(s.milestone_score for s in savings)
+        total_donor_contribution = sum(float(s.donor_contribution) for s in savings)
+        total_partner_contribution = sum(float(s.partner_contribution) for s in savings)
+        
+        # Get mother info for expected savings calculation
+        mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
+        expected_monthly = calculate_expected_savings(mother.num_children) if mother else 0
+        total_expected = expected_monthly * len(savings) if savings else 0
+        
+        return {
+            "mother_id": mother_id,
+            "total_savings": total_savings,
+            "total_expected": total_expected,
+            "savings_ratio": total_savings / total_expected if total_expected > 0 else 0,
+            "total_milestone_score": total_milestone_score,
+            "total_donor_contribution": total_donor_contribution,
+            "total_partner_contribution": total_partner_contribution,
+            "monthly_breakdown": [
+                {
+                    "month_key": s.month_key,
+                    "savings": float(s.savings),
+                    "milestone_score": s.milestone_score,
+                    "donor_contribution": float(s.donor_contribution),
+                    "partner_contribution": float(s.partner_contribution),
+                    "expected_savings": expected_monthly,
+                    "met_target": float(s.savings) >= expected_monthly
+                } for s in savings
+            ]
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/monthly-savings")
+@app.get("/monthly-savings", tags=["Savings & Analytics"])
 async def get_all_monthly_savings(month: Union[str, None] = None, db: Session = Depends(get_db)):
     """Retrieve all monthly savings for all mothers, optionally filtered by month (YYYY-MM)."""
     try:
@@ -1414,7 +1518,183 @@ async def get_all_monthly_savings(month: Union[str, None] = None, db: Session = 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/mothers/{mother_id}/monthly-activities")
+@app.get("/savings-transactions", tags=["Savings & Analytics"])
+async def get_savings_transactions(
+    mother_id: Union[str, None] = None,
+    month: Union[str, None] = None,
+    payment_method: Union[str, None] = None,
+    db: Session = Depends(get_db)
+):
+    """Retrieve savings transactions with optional filtering."""
+    try:
+        query = db.query(SavingsTransaction)
+        
+        if mother_id:
+            query = query.filter(SavingsTransaction.mother_id == mother_id)
+        if month:
+            query = query.filter(SavingsTransaction.month_key == month)
+        if payment_method:
+            query = query.filter(SavingsTransaction.payment_method == payment_method)
+        
+        transactions = query.order_by(SavingsTransaction.created_at.desc()).all()
+        
+        if not transactions:
+            return {"message": "No transactions found"}
+        
+        return [{
+            "transaction_id": t.transaction_id,
+            "mother_id": t.mother_id,
+            "month_key": t.month_key,
+            "amount": float(t.amount),
+            "phone_number": t.phone_number,
+            "payment_method": t.payment_method,
+            "transaction_status": t.transaction_status,
+            "reference_number": t.reference_number,
+            "notes": t.notes,
+            "created_at": t.created_at
+        } for t in transactions]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/savings-transactions/{transaction_id}", tags=["Savings & Analytics"])
+async def get_savings_transaction(transaction_id: str, db: Session = Depends(get_db)):
+    """Retrieve a specific savings transaction by ID."""
+    try:
+        transaction = db.query(SavingsTransaction).filter(SavingsTransaction.transaction_id == transaction_id).first()
+        if not transaction:
+            raise HTTPException(status_code=404, detail=f"Transaction {transaction_id} not found")
+        
+        return {
+            "transaction_id": transaction.transaction_id,
+            "mother_id": transaction.mother_id,
+            "month_key": transaction.month_key,
+            "amount": float(transaction.amount),
+            "phone_number": transaction.phone_number,
+            "payment_method": transaction.payment_method,
+            "transaction_status": transaction.transaction_status,
+            "reference_number": transaction.reference_number,
+            "notes": transaction.notes,
+            "created_at": transaction.created_at,
+            "updated_at": transaction.updated_at
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.put("/savings-transactions/{transaction_id}", tags=["Savings & Analytics"])
+async def update_savings_transaction(
+    transaction_id: str,
+    transaction_data: dict,
+    db: Session = Depends(get_db)
+):
+    """Update a savings transaction (e.g., change status, add notes)."""
+    try:
+        transaction = db.query(SavingsTransaction).filter(SavingsTransaction.transaction_id == transaction_id).first()
+        if not transaction:
+            raise HTTPException(status_code=404, detail=f"Transaction {transaction_id} not found")
+        
+        # Allow updating specific fields
+        if "transaction_status" in transaction_data:
+            valid_statuses = ["pending", "completed", "failed", "cancelled"]
+            if transaction_data["transaction_status"] not in valid_statuses:
+                raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
+            transaction.transaction_status = transaction_data["transaction_status"]
+        
+        if "notes" in transaction_data:
+            transaction.notes = transaction_data["notes"]
+        
+        if "reference_number" in transaction_data:
+            transaction.reference_number = transaction_data["reference_number"]
+        
+        transaction.updated_at = datetime.utcnow()
+        db.commit()
+        
+        return {"message": f"Transaction {transaction_id} updated successfully"}
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/mothers/{mother_id}/saving-streak", tags=["Savings & Analytics"])
+async def get_mother_saving_streak(
+    mother_id: str,
+    month: Union[int, None] = None,
+    db: Session = Depends(get_db)
+):
+    """Get the monthly saving streak for a specific mother."""
+    try:
+        current_month = month if month else datetime.now().month
+        streak_data = calculate_monthly_saving_streak(db, mother_id, current_month)
+        return streak_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/mothers/{mother_id}/credit-score", tags=["Savings & Analytics"])
+async def get_mother_credit_score(
+    mother_id: str,
+    month: Union[str, None] = None,
+    db: Session = Depends(get_db)
+):
+    """Get the credit score for a specific mother."""
+    try:
+        credit_score_data = calculate_credit_score(db, mother_id, month)
+        return credit_score_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/mothers/{mother_id}/savings-analytics", tags=["Savings & Analytics"])
+async def get_mother_savings_analytics(
+    mother_id: str,
+    month: Union[str, None] = None,
+    db: Session = Depends(get_db)
+):
+    """Get comprehensive savings analytics for a specific mother."""
+    try:
+        analytics = get_comprehensive_savings_analytics(db, mother_id, month)
+        return analytics
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/savings-analytics", tags=["Savings & Analytics"])
+async def get_all_savings_analytics(
+    month: Union[str, None] = None,
+    db: Session = Depends(get_db)
+):
+    """Get comprehensive savings analytics for all mothers."""
+    try:
+        analytics = get_comprehensive_savings_analytics(db, None, month)
+        return analytics
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/mothers/{mother_id}/transaction-summary", tags=["Savings & Analytics"])
+async def get_mother_transaction_summary_endpoint(
+    mother_id: str,
+    month: Union[str, None] = None,
+    db: Session = Depends(get_db)
+):
+    """Get a summary of transactions for a specific mother."""
+    try:
+        summary = get_mother_transaction_summary(db, mother_id, month)
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/payment-method-statistics", tags=["Savings & Analytics"])
+async def get_payment_method_statistics_endpoint(
+    month: Union[str, None] = None,
+    db: Session = Depends(get_db)
+):
+    """Get statistics about payment methods used across all transactions."""
+    try:
+        stats = get_payment_method_statistics(db, month)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.get("/mothers/{mother_id}/monthly-activities", tags=["Mother Management"])
 async def get_monthly_activities(mother_id: str, db: Session = Depends(get_db)):
     """Retrieve monthly activities for a specific mother."""
     try:
@@ -1425,7 +1705,7 @@ async def get_monthly_activities(mother_id: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/mothers/{mother_id}/compliance")
+@app.get("/mothers/{mother_id}/compliance", tags=["Mother Management"])
 async def get_compliance(mother_id: str, db: Session = Depends(get_db)):
     """Get annual compliance score."""
     try:
@@ -1433,19 +1713,21 @@ async def get_compliance(mother_id: str, db: Session = Depends(get_db)):
         if not mother:
             raise HTTPException(status_code=404, detail=f"No mother found with unique identifier {mother_id}")
 
-        current_month = min(datetime.now().month, 4)
-        max_compliance = current_month * 2
         return {
             "first_name": mother.first_name,
             "surname": mother.surname,
-            "compliance_score": f"{mother.compliance_score}/{max_compliance}"
+            "compliance_score": f"{mother.compliance_score}/24"
         }
     except HTTPException as e:
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/donor-view")
+# =============================================================================
+# DONOR VIEW DOCKET
+# =============================================================================
+
+@app.get("/donor-view", tags=["Donor View"])
 async def donor_view(db: Session = Depends(get_db)):
     """Provide a view for donors to see all mothers' savings and contributions."""
     try:
@@ -1481,7 +1763,11 @@ async def donor_view(db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.post("/admin/trigger-scoring")
+# =============================================================================
+# ADMIN & SYSTEM DOCKET
+# =============================================================================
+
+@app.post("/admin/trigger-scoring", tags=["Admin & System"])
 async def trigger_scoring_job(background_tasks: BackgroundTasks):
     """Manually trigger the scoring job."""
     try:
@@ -1495,7 +1781,7 @@ async def trigger_scoring_job(background_tasks: BackgroundTasks):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error triggering scoring job: {str(e)}")
 
-@app.get("/admin/scoring-status")
+@app.get("/admin/scoring-status", tags=["Admin & System"])
 async def get_scoring_status():
     """Get the current status of the scoring job."""
     return {
@@ -1504,7 +1790,7 @@ async def get_scoring_status():
         "next_run_time": scheduler.get_jobs()[0].next_run_time if scheduler.get_jobs() else None
     }
 
-@app.post("/admin/trigger-async-scoring")
+@app.post("/admin/trigger-async-scoring", tags=["Admin & System"])
 async def trigger_async_scoring_job(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Manually trigger the async scoring job for better performance."""
     try:
@@ -1518,7 +1804,7 @@ async def trigger_async_scoring_job(background_tasks: BackgroundTasks, db: Sessi
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error triggering async scoring job: {str(e)}")
 
-@app.get("/admin/scoring-progress")
+@app.get("/admin/scoring-progress", tags=["Admin & System"])
 async def get_scoring_progress_endpoint(db: Session = Depends(get_db)):
     """Get the current progress of scoring operations."""
     try:
@@ -1526,6 +1812,335 @@ async def get_scoring_progress_endpoint(db: Session = Depends(get_db)):
         return progress
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting scoring progress: {str(e)}")
+
+# =============================================================================
+# USSD INTERFACE DOCKET
+# =============================================================================
+
+@app.get("/ussd/mothers/{mother_id}/total-savings", tags=["USSD Interface"])
+async def ussd_get_total_savings(mother_id: str, db: Session = Depends(get_db)):
+    """Get mother's total savings formatted for USSD display."""
+    try:
+        result = get_mother_total_savings_ussd(db, mother_id)
+        return result
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Internal server error: {str(e)}",
+            "ussd_text": "CON System error. Please try again later.\n0. Back to main menu"
+        }
+
+@app.get("/ussd/mothers/{mother_id}/months-saved", tags=["USSD Interface"])
+async def ussd_get_months_saved(
+    mother_id: str, 
+    year: Union[int, None] = None,
+    db: Session = Depends(get_db)
+):
+    """Get mother's months saved out of 12 for the year, formatted for USSD."""
+    try:
+        if year is None:
+            year = datetime.now().year
+        result = get_mother_months_saved_ussd(db, mother_id, year)
+        return result
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Internal server error: {str(e)}",
+            "ussd_text": "CON System error. Please try again later.\n0. Back to main menu"
+        }
+
+@app.get("/ussd/mothers/{mother_id}/latest-contributions", tags=["USSD Interface"])
+async def ussd_get_latest_contributions(
+    mother_id: str,
+    limit: Union[int, None] = 5,
+    db: Session = Depends(get_db)
+):
+    """Get mother's latest contributions with amount, date, and transaction IDs formatted for USSD."""
+    try:
+        if limit is None or limit < 1:
+            limit = 5
+        elif limit > 10:  # Limit to prevent USSD overflow
+            limit = 10
+            
+        result = get_mother_latest_contributions_ussd(db, mother_id, limit)
+        return result
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Internal server error: {str(e)}",
+            "ussd_text": "CON System error. Please try again later.\n0. Back to main menu"
+        }
+
+@app.get("/ussd/mothers/{mother_id}/quick-summary", tags=["USSD Interface"])
+async def ussd_get_quick_summary(mother_id: str, db: Session = Depends(get_db)):
+    """Get mother's quick savings summary formatted for USSD main menu."""
+    try:
+        mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
+        if not mother:
+            return {
+                "success": False,
+                "message": "Mother not found",
+                "ussd_text": "CON Mother not found. Please try again.\n0. Back to main menu"
+            }
+        
+        # Get basic stats
+        monthly_savings = db.query(MonthlySavings).filter(
+            MonthlySavings.mother_id == mother_id
+        ).all()
+        
+        total_saved = sum(float(s.savings) for s in monthly_savings)
+        current_year = datetime.now().year
+        
+        # Count months saved this year
+        current_year_savings = [s for s in monthly_savings if s.month_key.startswith(str(current_year))]
+        months_saved_this_year = sum(1 for s in current_year_savings if s.savings > 0)
+        
+        # Get compliance score
+        compliance_score = mother.compliance_score
+        
+        # Format for USSD main menu
+        ussd_text = f"CON Welcome {mother.first_name}!\n"
+        ussd_text += f"Total Saved: UGX {total_saved:,.0f}\n"
+        ussd_text += f"Months Saved: {months_saved_this_year}/12\n"
+        ussd_text += f"Compliance: {compliance_score}/24\n\n"
+        ussd_text += f"1. View Total Savings\n"
+        ussd_text += f"2. View Months Progress\n"
+        ussd_text += f"3. Latest Contributions\n"
+        ussd_text += f"4. Comprehensive Summary\n"
+        ussd_text += f"5. Set Reminder\n"
+        ussd_text += f"0. Exit"
+        
+        return {
+            "success": True,
+            "mother_name": f"{mother.first_name} {mother.surname}",
+            "total_saved": total_saved,
+            "months_saved": months_saved_this_year,
+            "compliance_score": f"{compliance_score}/24",
+            "ussd_text": ussd_text
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Internal server error: {str(e)}",
+            "ussd_text": "CON System error. Please try again later.\n0. Exit"
+        }
+
+@app.get("/ussd/mothers/{mother_id}/comprehensive-summary", tags=["USSD Interface"])
+async def ussd_get_comprehensive_summary(
+    mother_id: str,
+    month: Union[int, None] = None,
+    db: Session = Depends(get_db)
+):
+    """Get mother's comprehensive summary including compliance score, monthly savings, and credit score formatted for USSD."""
+    try:
+        mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
+        if not mother:
+            return {
+                "success": False,
+                "message": "Mother not found",
+                "ussd_text": "CON Mother not found. Please try again.\n0. Back to main menu"
+            }
+        
+        # Get current month if not specified
+        if month is None:
+            month = datetime.now().month
+        
+        if not 1 <= month <= 12:
+            return {
+                "success": False,
+                "message": "Invalid month",
+                "ussd_text": "CON Invalid month. Please use 1-12.\n0. Back to main menu"
+            }
+        
+        current_year = datetime.now().year
+        month_key = f"{current_year}-{month:02d}"
+        
+        # Get compliance score
+        compliance_score = mother.compliance_score
+        
+        # Get monthly savings for specific month
+        monthly_savings = db.query(MonthlySavings).filter(
+            MonthlySavings.mother_id == mother_id,
+            MonthlySavings.month_key == month_key
+        ).first()
+        
+        month_savings = 0.0
+        month_milestone = 0
+        month_expected = calculate_expected_savings(mother.num_children)
+        
+        if monthly_savings:
+            month_savings = float(monthly_savings.savings)
+            month_milestone = monthly_savings.milestone_score
+        
+        # Get credit score
+        credit_score_data = calculate_credit_score(db, mother_id, month_key)
+        credit_score = credit_score_data["credit_score"]
+        credit_rating = credit_score_data["credit_rating"]
+        
+        # Format month name
+        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        month_name = month_names[month - 1]
+        
+        # Format for USSD display
+        ussd_text = f"CON {month_name} {current_year} Summary\n"
+        ussd_text += f"Compliance: {compliance_score}/24\n"
+        ussd_text += f"Credit Score: {credit_score}/850\n"
+        ussd_text += f"Rating: {credit_rating}\n\n"
+        ussd_text += f"Monthly Savings:\n"
+        ussd_text += f"Saved: UGX {month_savings:,.0f}\n"
+        ussd_text += f"Expected: UGX {month_expected:,.0f}\n"
+        
+        if month_expected > 0:
+            month_ratio = (month_savings / month_expected) * 100
+            ussd_text += f"Progress: {month_ratio:.1f}%\n"
+        
+        if month_milestone == 1:
+            ussd_text += f"✅ Target Met!\n"
+        else:
+            ussd_text += f"❌ Target Not Met\n"
+        
+        ussd_text += f"\n0. Back to main menu"
+        
+        return {
+            "success": True,
+            "mother_name": f"{mother.first_name} {mother.surname}",
+            "month": month,
+            "month_name": month_name,
+            "year": current_year,
+            "compliance_score": f"{compliance_score}/24",
+            "credit_score": f"{credit_score}/850",
+            "credit_rating": credit_rating,
+            "month_savings": month_savings,
+            "month_expected": month_expected,
+            "month_milestone": month_milestone,
+            "ussd_text": ussd_text
+        }
+        
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Internal server error: {str(e)}",
+            "ussd_text": "CON System error. Please try again later.\n0. Back to main menu"
+        }
+
+@app.post("/ussd/mothers/{mother_id}/set-reminder", tags=["USSD Interface"])
+async def ussd_set_saving_reminder(
+    mother_id: str,
+    reminder_data: SavingReminderRequest,
+    db: Session = Depends(get_db)
+):
+    """Set a monthly saving reminder for a mother via USSD."""
+    try:
+        # Verify mother exists
+        mother = db.query(Mother).filter(Mother.generated_id == mother_id).first()
+        if not mother:
+            return {
+                "success": False,
+                "message": "Mother not found",
+                "ussd_text": "CON Mother not found. Please try again.\n0. Back to main menu"
+            }
+        
+        # Check if reminder already exists for this mother
+        existing_reminder = db.query(SavingReminder).filter(
+            SavingReminder.mother_id == mother_id,
+            SavingReminder.is_active == True
+        ).first()
+        
+        if existing_reminder:
+            # Update existing reminder
+            existing_reminder.reminder_date = reminder_data.reminder_date
+            existing_reminder.updated_at = datetime.utcnow()
+            reminder_id = existing_reminder.reminder_id
+        else:
+            # Create new reminder
+            reminder_id = f"REM{datetime.now().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:8]}"
+            new_reminder = SavingReminder(
+                reminder_id=reminder_id,
+                mother_id=mother_id,
+                reminder_date=reminder_data.reminder_date,
+                reminder_time=time(9, 0),  # Default to 9:00 AM
+                is_active=True
+            )
+            db.add(new_reminder)
+        
+        db.commit()
+        
+        # Format confirmation message for USSD
+        ussd_text = f"CON Reminder Set Successfully!\n"
+        ussd_text += f"You will now receive a monthly reminder on the {reminder_data.reminder_date}{get_day_suffix(reminder_data.reminder_date)} of each month.\n\n"
+        ussd_text += f"0. Back to main menu"
+        
+        return {
+            "success": True,
+            "message": "Reminder set successfully",
+            "reminder_id": reminder_id,
+            "reminder_date": reminder_data.reminder_date,
+            "mother_name": f"{mother.first_name} {mother.surname}",
+            "ussd_text": ussd_text
+        }
+        
+    except Exception as e:
+        db.rollback()
+        return {
+            "success": False,
+            "message": f"Internal server error: {str(e)}",
+            "ussd_text": "CON System error. Please try again later.\n0. Back to main menu"
+        }
+
+@app.post("/ussd/mothers/{mother_id}/menu-selection", tags=["USSD Interface"])
+async def ussd_handle_menu_selection(
+    mother_id: str,
+    selection_data: dict,
+    db: Session = Depends(get_db)
+):
+    """Handle USSD menu selections and route to appropriate endpoints."""
+    try:
+        selection = selection_data.get("selection", "")
+        
+        if selection == "1":
+            # Route to total savings
+            result = get_mother_total_savings_ussd(db, mother_id)
+            return result
+        elif selection == "2":
+            # Route to months saved
+            result = get_mother_months_saved_ussd(db, mother_id)
+            return result
+        elif selection == "3":
+            # Route to latest contributions
+            result = get_mother_latest_contributions_ussd(db, mother_id, 5)
+            return result
+        elif selection == "4":
+            # Route to comprehensive summary
+            result = ussd_get_comprehensive_summary(mother_id, None, db)
+            return result
+        elif selection == "5":
+            # Route to set reminder
+            return {
+                "success": True,
+                "message": "Set Reminder",
+                "ussd_text": "CON Set Monthly Saving Reminder\n\nEnter the day of the month (1-31) when you want to be reminded:\n\n0. Back to main menu"
+            }
+        elif selection == "0":
+            return {
+                "success": True,
+                "message": "Session ended",
+                "ussd_text": "END Thank you for using Cariya Wallet!"
+            }
+        else:
+            return {
+                "success": False,
+                "message": "Invalid selection",
+                "ussd_text": "CON Invalid selection. Please try again.\n1. Total Savings\n2. Months Progress\n3. Latest Contributions\n4. Comprehensive Summary\n5. Set Reminder\n0. Exit"
+            }
+            
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Internal server error: {str(e)}",
+            "ussd_text": "CON System error. Please try again later.\n0. Exit"
+        }
 
 if __name__ == "__main__":
     import uvicorn
